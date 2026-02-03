@@ -1,0 +1,64 @@
+# =============================================================================
+# Production Python Dockerfile (Multi-Stage Build)
+# =============================================================================
+# This Dockerfile produces a minimal, secure production image.
+#
+# Key optimizations:
+# - Multi-stage build: dependencies are installed in a builder stage, only the
+#   virtualenv is copied to the final image, drastically reducing image size.
+# - Non-root user: the application runs as an unprivileged user for security.
+# - .dockerignore: ensure you have one to exclude .git, __pycache__, .env, etc.
+# - Layer ordering: dependencies are installed before copying source code so
+#   that the dependency layer is cached when only source code changes.
+# =============================================================================
+
+# --- Stage 1: Builder --------------------------------------------------------
+# Install dependencies into a virtualenv so we can copy just the venv later.
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# Install system-level build dependencies (e.g., for psycopg2, cryptography)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create a virtualenv and install Python dependencies
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# --- Stage 2: Runtime --------------------------------------------------------
+# Start from a clean slim image - no build tools, no caches.
+FROM python:3.12-slim AS runtime
+
+# Install only the runtime system libraries (no compilers)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy the pre-built virtualenv from the builder stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create a non-root user and switch to it
+RUN groupadd --gid 1000 app && \
+    useradd --uid 1000 --gid app --create-home app
+USER app
+
+WORKDIR /home/app
+
+# Copy application source code (owned by the app user)
+COPY --chown=app:app . .
+
+EXPOSE 8000
+
+# Health check: verify the application responds on /health
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run with a production ASGI server
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

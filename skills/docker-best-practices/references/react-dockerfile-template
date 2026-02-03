@@ -1,0 +1,77 @@
+# =============================================================================
+# Production React Dockerfile (Multi-Stage Build)
+# =============================================================================
+# Stage 1 builds the React app into static files.
+# Stage 2 serves them with Nginx for optimal performance.
+#
+# Key optimizations:
+# - Alpine-based images for minimal size (~25 MB final image).
+# - npm ci for deterministic, faster installs from lockfile.
+# - Nginx serves pre-built static files (no Node.js runtime in production).
+# - SPA routing: Nginx falls back to index.html for client-side routes.
+# =============================================================================
+
+# --- Stage 1: Builder --------------------------------------------------------
+FROM node:20-alpine AS builder
+
+WORKDIR /build
+
+# Install dependencies first (cached unless package files change)
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+# Copy source and build the production bundle
+COPY . .
+RUN npm run build
+
+# --- Stage 2: Runtime (Nginx) ------------------------------------------------
+FROM nginx:alpine AS runtime
+
+# Remove the default Nginx site configuration
+RUN rm /etc/nginx/conf.d/default.conf
+
+# Add custom Nginx config with SPA routing support
+COPY --from=builder /build/nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy built static files from the builder stage
+COPY --from=builder /build/dist /usr/share/nginx/html
+
+# Run Nginx as a non-root user
+RUN chown -R nginx:nginx /usr/share/nginx/html && \
+    chown -R nginx:nginx /var/cache/nginx && \
+    chown -R nginx:nginx /var/log/nginx && \
+    touch /var/run/nginx.pid && chown nginx:nginx /var/run/nginx.pid
+USER nginx
+
+EXPOSE 8080
+
+# Health check: verify Nginx is serving the app
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD wget -qO- http://localhost:8080/health || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]
+
+# =============================================================================
+# Required: nginx.conf in your project root with the following content:
+#
+#   server {
+#       listen 8080;
+#       root /usr/share/nginx/html;
+#       index index.html;
+#
+#       location /health {
+#           access_log off;
+#           return 200 '{"status":"ok"}';
+#           add_header Content-Type application/json;
+#       }
+#
+#       location / {
+#           try_files $uri $uri/ /index.html;
+#       }
+#
+#       location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {
+#           expires 1y;
+#           add_header Cache-Control "public, immutable";
+#       }
+#   }
+# =============================================================================

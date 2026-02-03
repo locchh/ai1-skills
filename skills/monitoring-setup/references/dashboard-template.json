@@ -1,0 +1,234 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": null,
+    "title": "Service Overview - RED Metrics",
+    "description": "Rate, Errors, Duration metrics with resource usage panels",
+    "tags": ["generated", "red-metrics", "service"],
+    "timezone": "utc",
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "templating": {
+      "list": [
+        {
+          "name": "service",
+          "type": "query",
+          "datasource": "Prometheus",
+          "query": "label_values(http_requests_total, job)",
+          "refresh": 2,
+          "includeAll": true,
+          "multi": false,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          }
+        },
+        {
+          "name": "interval",
+          "type": "interval",
+          "options": [
+            { "text": "1m", "value": "1m", "selected": false },
+            { "text": "5m", "value": "5m", "selected": true },
+            { "text": "15m", "value": "15m", "selected": false },
+            { "text": "1h", "value": "1h", "selected": false }
+          ],
+          "current": {
+            "text": "5m",
+            "value": "5m"
+          }
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Request Rate (requests/sec)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{job=~\"$service\"}[$interval])) by (job)",
+            "legendFormat": "{{ job }} - total"
+          },
+          {
+            "expr": "sum(rate(http_requests_total{job=~\"$service\"}[$interval])) by (method)",
+            "legendFormat": "{{ method }}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Error Rate (%)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "100 * sum(rate(http_requests_total{job=~\"$service\", status_code=~\"5..\"}[$interval])) by (job) / sum(rate(http_requests_total{job=~\"$service\"}[$interval])) by (job)",
+            "legendFormat": "{{ job }} - 5xx rate"
+          },
+          {
+            "expr": "100 * sum(rate(http_requests_total{job=~\"$service\", status_code=~\"4..\"}[$interval])) by (job) / sum(rate(http_requests_total{job=~\"$service\"}[$interval])) by (job)",
+            "legendFormat": "{{ job }} - 4xx rate"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10
+            },
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 1 },
+                { "color": "red", "value": 5 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Latency Percentiles (seconds)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=~\"$service\"}[$interval])) by (le))",
+            "legendFormat": "p50"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\"$service\"}[$interval])) by (le))",
+            "legendFormat": "p95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\"$service\"}[$interval])) by (le))",
+            "legendFormat": "p99"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 5
+            },
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 0.5 },
+                { "color": "red", "value": 2.0 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Requests In Progress",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "sum(http_requests_in_progress{job=~\"$service\"}) by (job)",
+            "legendFormat": "{{ job }}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 15
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "CPU Usage (%)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "100 * sum(rate(container_cpu_usage_seconds_total{pod=~\"$service.*\"}[$interval])) by (pod) / sum(container_spec_cpu_quota{pod=~\"$service.*\"} / container_spec_cpu_period{pod=~\"$service.*\"}) by (pod)",
+            "legendFormat": "{{ pod }}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10
+            },
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 70 },
+                { "color": "red", "value": 85 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "Memory Usage (%)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "100 * sum(container_memory_working_set_bytes{pod=~\"$service.*\"}) by (pod) / sum(container_spec_memory_limit_bytes{pod=~\"$service.*\"}) by (pod)",
+            "legendFormat": "{{ pod }}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10
+            },
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 70 },
+                { "color": "red", "value": 85 }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  }
+}
