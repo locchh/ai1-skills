@@ -1,37 +1,80 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# check-test-coverage.sh — Run pytest with coverage and fail if below threshold.
+#
+# Usage:
+#   ./check-test-coverage.sh [--output-dir <dir>] [--fail-under <pct>]
+#
+# Options:
+#   --output-dir <dir>   Directory to write coverage results (default: ./coverage-results)
+#   --fail-under <pct>   Minimum coverage percentage (default: 80)
+
 set -euo pipefail
 
-# check-test-coverage.sh
-# Run pytest with coverage analysis and enforce minimum coverage threshold.
+# ─── Defaults ───────────────────────────────────────────────────────────────────
+OUTPUT_DIR="./coverage-results"
+FAIL_UNDER=80
 
-COVERAGE_THRESHOLD="${COVERAGE_THRESHOLD:-80}"
-SOURCE_DIR="${1:-src}"
+# ─── Parse arguments ────────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --fail-under)
+            FAIL_UNDER="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--output-dir <dir>] [--fail-under <pct>]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
 
-echo "============================================"
-echo "  Running Tests with Coverage Analysis"
-echo "============================================"
-echo "Source directory: ${SOURCE_DIR}"
-echo "Coverage threshold: ${COVERAGE_THRESHOLD}%"
+# ─── Setup ───────────────────────────────────────────────────────────────────────
+mkdir -p "$OUTPUT_DIR"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RESULTS_FILE="$OUTPUT_DIR/coverage-report-${TIMESTAMP}.txt"
+HTML_DIR="$OUTPUT_DIR/htmlcov"
+
+echo "=== Test Coverage Check ==="
+echo "Fail-under threshold: ${FAIL_UNDER}%"
+echo "Output directory:     ${OUTPUT_DIR}"
 echo ""
 
-if ! command -v pytest &>/dev/null; then
-    echo "ERROR: pytest is not installed. Install it with: pip install pytest pytest-cov"
-    exit 1
-fi
-
+# ─── Run pytest with coverage ────────────────────────────────────────────────────
 EXIT_CODE=0
-pytest --cov="${SOURCE_DIR}" \
-       --cov-report=term-missing \
-       --cov-fail-under="${COVERAGE_THRESHOLD}" \
-       -v || EXIT_CODE=$?
+pytest \
+    --cov=app \
+    --cov-report=term-missing \
+    --cov-report="html:${HTML_DIR}" \
+    --cov-report="json:${OUTPUT_DIR}/coverage.json" \
+    --cov-fail-under="${FAIL_UNDER}" \
+    -q \
+    2>&1 | tee "$RESULTS_FILE" || EXIT_CODE=$?
 
-echo ""
-echo "============================================"
-if [ "${EXIT_CODE}" -eq 0 ]; then
-    echo "  PASS: All tests passed with >=${COVERAGE_THRESHOLD}% coverage"
+echo "" >> "$RESULTS_FILE"
+echo "Timestamp: $(date -Iseconds)" >> "$RESULTS_FILE"
+echo "Threshold: ${FAIL_UNDER}%" >> "$RESULTS_FILE"
+
+# ─── Report result ───────────────────────────────────────────────────────────────
+if [[ $EXIT_CODE -eq 0 ]]; then
+    echo ""
+    echo "PASS: Coverage meets the ${FAIL_UNDER}% threshold."
+    echo "Status: PASS" >> "$RESULTS_FILE"
+    echo "HTML report: ${HTML_DIR}/index.html"
+    echo "Full report: ${RESULTS_FILE}"
 else
-    echo "  FAIL: Tests failed or coverage below ${COVERAGE_THRESHOLD}%"
+    echo ""
+    echo "FAIL: Coverage is below the ${FAIL_UNDER}% threshold."
+    echo "Status: FAIL" >> "$RESULTS_FILE"
+    echo "Review missing coverage in: ${HTML_DIR}/index.html"
+    echo "Full report: ${RESULTS_FILE}"
 fi
-echo "============================================"
 
-exit "${EXIT_CODE}"
+exit $EXIT_CODE

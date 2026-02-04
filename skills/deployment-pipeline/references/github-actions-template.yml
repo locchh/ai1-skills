@@ -1,16 +1,11 @@
-# =============================================================================
-# CI/CD Pipeline - GitHub Actions Workflow Template
-# =============================================================================
-# This workflow runs on pushes to main and on pull requests.
-# It enforces a strict job dependency chain:
-#   lint -> test -> build -> deploy-staging -> deploy-production
+# GitHub Actions CI/CD Pipeline Template
+# Full deployment pipeline: build -> test -> staging -> production
 #
-# Secrets required:
-#   DOCKER_REGISTRY_URL, DOCKER_USERNAME, DOCKER_PASSWORD
-#   STAGING_SSH_HOST, STAGING_SSH_KEY
-#   PRODUCTION_SSH_HOST, PRODUCTION_SSH_KEY
-#   SLACK_WEBHOOK_URL (optional, for notifications)
-# =============================================================================
+# Prerequisites:
+#   - GitHub Environments: staging, production (with required reviewers)
+#   - GitHub Secrets per environment: DATABASE_URL, REDIS_URL, API_URL,
+#     DOCKER_REGISTRY, DOCKER_USERNAME, DOCKER_PASSWORD
+#   - Branch protection on main: require status checks
 
 name: CI/CD Pipeline
 
@@ -19,17 +14,34 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      skip_tests:
+        description: 'Skip test stage (emergency only)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: "3.12"
-  NODE_VERSION: "20"
-  DOCKER_IMAGE: ${{ secrets.DOCKER_REGISTRY_URL }}/app
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+  DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
 
-# -----------------------------------------------------------------------------
-# Job 1: Lint - Static analysis and code formatting checks
-# -----------------------------------------------------------------------------
 jobs:
-  lint:
+  # ─── Stage 1: Build ──────────────────────────────────────────────────────
+  build:
+    name: Build & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,49 +50,100 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"  # Caches pip dependencies based on requirements files
+          cache: 'pip'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: "npm"  # Caches npm dependencies based on package-lock.json
+          cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Python linting tools
-        run: pip install ruff mypy
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff mypy
 
-      - name: Run Ruff (linter + formatter check)
-        run: ruff check . && ruff format --check .
+      - name: Lint Python
+        run: |
+          ruff check src/
+          ruff format --check src/
 
-      - name: Run mypy (type checking)
-        run: mypy src/ --ignore-missing-imports
+      - name: Type check Python
+        run: mypy src/
 
-      - name: Run ESLint (frontend)
+      - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci && npm run lint
+        run: npm ci
 
-  # ---------------------------------------------------------------------------
-  # Job 2: Test - Unit and integration tests
-  # Depends on lint passing first to avoid wasting CI minutes on broken code
-  # ---------------------------------------------------------------------------
+      - name: Lint frontend
+        working-directory: frontend
+        run: |
+          npx eslint src/
+          npx prettier --check src/
+
+      - name: Type check frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
+          retention-days: 1
+
+      - name: Build backend Docker image
+        run: |
+          docker build -t app-backend:${{ github.sha }} -f Dockerfile.backend .
+          docker save app-backend:${{ github.sha }} > /tmp/backend-image.tar
+
+      - name: Build frontend Docker image
+        run: |
+          docker build -t app-frontend:${{ github.sha }} -f Dockerfile.frontend .
+          docker save app-frontend:${{ github.sha }} > /tmp/frontend-image.tar
+
+      - name: Upload Docker images
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/*-image.tar
+          retention-days: 1
+
+  # ─── Stage 2: Test ───────────────────────────────────────────────────────
   test:
-    needs: lint
+    name: Test Suite
+    needs: build
+    if: ${{ !inputs.skip_tests }}
     runs-on: ubuntu-latest
     services:
-      # Spin up PostgreSQL for integration tests
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test_db
-        ports: ["5432:5432"]
+          POSTGRES_DB: testdb
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U test"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -88,121 +151,185 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Run database migrations
-        run: alembic upgrade head
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --cov=src --cov-report=xml --junitxml=test-results/unit.xml
 
-      - name: Run pytest with coverage
-        run: pytest --cov=src --cov-report=xml --junitxml=results.xml
+      - name: Run integration tests
+        run: pytest tests/integration/ -v --junitxml=test-results/integration.xml
         env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+          REDIS_URL: redis://localhost:6379
 
-      - name: Upload coverage report
+      - name: Check coverage threshold
+        run: coverage report --fail-under=80
+
+      - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.xml
 
-  # ---------------------------------------------------------------------------
-  # Job 3: Build - Build Docker image and push to registry
-  # Only runs after tests pass to ensure we never ship broken images
-  # ---------------------------------------------------------------------------
-  build:
-    needs: test
+      - name: Security audit (Python)
+        run: pip-audit --strict
+        continue-on-error: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test -- --coverage --watchAll=false
+
+      - name: Security audit (npm)
+        working-directory: frontend
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+
+  # ─── Stage 3: Deploy to Staging ──────────────────────────────────────────
+  staging:
+    name: Deploy to Staging
+    needs: [build, test]
+    if: github.ref == 'refs/heads/main' || inputs.environment == 'staging'
     runs-on: ubuntu-latest
-    # Only build images on pushes to main, not on PRs
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    outputs:
-      image_tag: ${{ steps.meta.outputs.tags }}
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate image metadata (tags and labels)
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Download Docker images
+        uses: actions/download-artifact@v4
         with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
+          name: docker-images
+          path: /tmp/
 
-      - name: Log in to Docker registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.DOCKER_REGISTRY_URL }}
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Load Docker images
+        run: |
+          docker load < /tmp/backend-image.tar
+          docker load < /tmp/frontend-image.tar
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.DOCKER_IMAGE }}:latest
-          cache-to: type=inline
+      - name: Push to registry
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login ${{ env.DOCKER_REGISTRY }} -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+          docker tag app-backend:${{ github.sha }} ${{ env.DOCKER_REGISTRY }}/app-backend:${{ github.sha }}
+          docker tag app-frontend:${{ github.sha }} ${{ env.DOCKER_REGISTRY }}/app-frontend:${{ github.sha }}
+          docker push ${{ env.DOCKER_REGISTRY }}/app-backend:${{ github.sha }}
+          docker push ${{ env.DOCKER_REGISTRY }}/app-frontend:${{ github.sha }}
 
-  # ---------------------------------------------------------------------------
-  # Job 4: Deploy Staging - Automatic deployment on every push to main
-  # Uses the image built in the previous job
-  # ---------------------------------------------------------------------------
-  deploy-staging:
-    needs: build
-    runs-on: ubuntu-latest
-    environment: staging  # Links to GitHub Environment for protection rules
-    steps:
-      - uses: actions/checkout@v4
+      - name: Run migration dry-run
+        run: |
+          chmod +x skills/deployment-pipeline/scripts/migration-dry-run.sh
+          ./skills/deployment-pipeline/scripts/migration-dry-run.sh \
+            --db-url "${{ secrets.DATABASE_URL }}" \
+            --output-dir ./deploy-results/
+        continue-on-error: false
 
       - name: Deploy to staging
         run: |
-          chmod +x scripts/deploy.sh
-          ./scripts/deploy.sh staging
-        env:
-          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
-          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
-          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          chmod +x skills/deployment-pipeline/scripts/deploy.sh
+          ./skills/deployment-pipeline/scripts/deploy.sh \
+            --env staging \
+            --version ${{ github.sha }} \
+            --output-dir ./deploy-results/
 
-      - name: Run smoke tests against staging
+      - name: Smoke tests
         run: |
-          chmod +x scripts/smoke-test.sh
-          ./scripts/smoke-test.sh https://staging.example.com
+          chmod +x skills/deployment-pipeline/scripts/smoke-test.sh
+          ./skills/deployment-pipeline/scripts/smoke-test.sh \
+            --url "${{ vars.STAGING_URL }}" \
+            --output-dir ./deploy-results/
 
-  # ---------------------------------------------------------------------------
-  # Job 5: Deploy Production - Requires manual approval via GitHub Environment
-  # The "production" environment must have required reviewers configured
-  # ---------------------------------------------------------------------------
-  deploy-production:
-    needs: deploy-staging
+      - name: Health checks
+        run: |
+          python skills/deployment-pipeline/scripts/health-check.py \
+            --url "${{ vars.STAGING_URL }}" \
+            --retries 5 \
+            --output-dir ./deploy-results/
+
+      - name: Upload deploy results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-deploy-results
+          path: deploy-results/
+
+  # ─── Stage 4: Deploy to Production ──────────────────────────────────────
+  production:
+    name: Deploy to Production
+    needs: staging
+    if: github.ref == 'refs/heads/main' || inputs.environment == 'production'
     runs-on: ubuntu-latest
-    environment: production  # Manual approval gate configured in repo settings
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to production
-        run: |
-          chmod +x scripts/deploy.sh
-          ./scripts/deploy.sh production
-        env:
-          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
-          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
-          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+      - name: Download Docker images
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/
 
-      - name: Run smoke tests against production
+      - name: Load and push Docker images
         run: |
-          chmod +x scripts/smoke-test.sh
-          ./scripts/smoke-test.sh https://app.example.com
+          docker load < /tmp/backend-image.tar
+          docker load < /tmp/frontend-image.tar
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login ${{ env.DOCKER_REGISTRY }} -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+          docker tag app-backend:${{ github.sha }} ${{ env.DOCKER_REGISTRY }}/app-backend:${{ github.sha }}
+          docker tag app-backend:${{ github.sha }} ${{ env.DOCKER_REGISTRY }}/app-backend:latest
+          docker tag app-frontend:${{ github.sha }} ${{ env.DOCKER_REGISTRY }}/app-frontend:${{ github.sha }}
+          docker tag app-frontend:${{ github.sha }} ${{ env.DOCKER_REGISTRY }}/app-frontend:latest
+          docker push ${{ env.DOCKER_REGISTRY }}/app-backend:${{ github.sha }}
+          docker push ${{ env.DOCKER_REGISTRY }}/app-backend:latest
+          docker push ${{ env.DOCKER_REGISTRY }}/app-frontend:${{ github.sha }}
+          docker push ${{ env.DOCKER_REGISTRY }}/app-frontend:latest
 
-      - name: Notify team on Slack
+      - name: Deploy to production (canary)
+        run: |
+          chmod +x skills/deployment-pipeline/scripts/deploy.sh
+          ./skills/deployment-pipeline/scripts/deploy.sh \
+            --env production \
+            --version ${{ github.sha }} \
+            --canary \
+            --output-dir ./deploy-results/
+
+      - name: Production smoke tests
+        run: |
+          chmod +x skills/deployment-pipeline/scripts/smoke-test.sh
+          ./skills/deployment-pipeline/scripts/smoke-test.sh \
+            --url "${{ vars.PRODUCTION_URL }}" \
+            --output-dir ./deploy-results/
+
+      - name: Production health checks
+        run: |
+          python skills/deployment-pipeline/scripts/health-check.py \
+            --url "${{ vars.PRODUCTION_URL }}" \
+            --retries 5 \
+            --timeout 30 \
+            --output-dir ./deploy-results/
+
+      - name: Upload deploy results
         if: always()
-        run: |
-          STATUS="${{ job.status }}"
-          curl -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
-            -H 'Content-Type: application/json' \
-            -d "{\"text\":\"Production deploy ${STATUS}: ${{ github.sha }}\"}"
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-deploy-results
+          path: deploy-results/

@@ -1,220 +1,207 @@
 # SQLAlchemy 2.0 Advanced Patterns
 
-## Async Session Patterns
-
-### Creating an Async Engine and Session Factory
-
-```python
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-
-# Use the async driver (asyncpg for PostgreSQL, aiosqlite for SQLite)
-engine = create_async_engine(
-    "postgresql+asyncpg://user:password@localhost:5432/mydb",
-    echo=False,
-    pool_size=20,
-    max_overflow=10,
-    pool_timeout=30,
-    pool_recycle=1800,
-)
-
-# async_sessionmaker replaces the old sessionmaker(class_=AsyncSession) pattern
-async_session_factory = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,  # Prevents lazy-load issues after commit
-)
-```
-
-### Dependency-Injected Session (FastAPI)
-
-```python
-from typing import AsyncGenerator
-
-async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
-    """Yield a session and ensure it is closed after the request."""
-    async with async_session_factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-```
-
-### Session Lifecycle Rules
-
-1. One session per request -- never share sessions across requests or tasks.
-2. Keep sessions short-lived -- open late, close early.
-3. Set `expire_on_commit=False` when you need to access attributes after commit
-   without triggering implicit IO.
-4. Always use `async with` or explicit `close()` to avoid connection leaks.
+Advanced query patterns, relationship loading, bulk operations, and session management for async SQLAlchemy 2.0 with FastAPI.
 
 ---
 
-## Query Optimization: Eager Loading Strategies
+## Relationship Loading Strategies
 
-### selectinload -- Preferred Default
+### selectinload (Default for Async)
 
-Executes a second `SELECT ... WHERE id IN (...)` query. Best for one-to-many
-and many-to-many relationships because it avoids the cartesian product problem.
+Loads related objects in a separate SELECT with an IN clause. Best for one-to-many and many-to-many relationships.
 
 ```python
 from sqlalchemy.orm import selectinload
-from sqlalchemy import select
 
-stmt = (
+# Load a user with all their posts
+result = await session.execute(
     select(User)
-    .options(selectinload(User.orders))
-    .where(User.is_active == True)
+    .where(User.id == user_id)
+    .options(selectinload(User.posts))
 )
-result = await session.execute(stmt)
-users = result.scalars().all()
-# Each user.orders is already loaded -- no additional queries.
+user = result.scalar_one_or_none()
+# user.posts is loaded — no lazy loading needed
 ```
 
-### joinedload -- Use for Many-to-One / One-to-One
+**When to use:** Default choice for async. Good when you need the related objects and the collection is moderate-sized.
 
-Performs a LEFT OUTER JOIN in the same query. Ideal when the related object is
-a single row (e.g., `Order.user`). Avoid for collections -- the join duplicates
-the parent row for every child row.
+### joinedload
+
+Loads related objects in a single JOIN query. Best for many-to-one and one-to-one relationships.
 
 ```python
 from sqlalchemy.orm import joinedload
 
-stmt = (
-    select(Order)
-    .options(joinedload(Order.user))
-    .where(Order.total > 100)
+# Load posts with their authors in a single query
+result = await session.execute(
+    select(Post)
+    .options(joinedload(Post.author))
+    .limit(20)
 )
-result = await session.execute(stmt)
-orders = result.unique().scalars().all()  # unique() required with joinedload
+posts = result.unique().scalars().all()
+# post.author is loaded for each post
 ```
 
-### subqueryload -- Use for Large Collections
+**Important:** Always call `.unique()` on the result when using `joinedload` with collections, as the JOIN can produce duplicate rows.
 
-Issues a separate subquery. Useful when the IN-list for `selectinload` would be
-too large (thousands of parent IDs).
+**When to use:** For to-one relationships where you always need the related object.
+
+### subqueryload
+
+Loads related objects in a separate subquery. Similar to selectinload but uses a subquery instead of IN.
 
 ```python
 from sqlalchemy.orm import subqueryload
 
-stmt = (
-    select(Department)
-    .options(subqueryload(Department.employees))
+result = await session.execute(
+    select(User)
+    .options(subqueryload(User.posts))
 )
 ```
 
-### When to Use Each
+**When to use:** When the parent query is complex and IN clause would be too large.
 
-| Strategy       | Best For                        | Avoids                     |
-|----------------|---------------------------------|----------------------------|
-| selectinload   | One-to-many, many-to-many       | Cartesian product          |
-| joinedload     | Many-to-one, one-to-one         | Extra query round-trip     |
-| subqueryload   | Very large parent result sets   | Huge IN-clause             |
-| lazyload       | Rarely accessed relationships   | N+1 (use with caution)     |
+### Nested Loading
+
+Load relationships of relationships:
+
+```python
+result = await session.execute(
+    select(User)
+    .options(
+        selectinload(User.posts).selectinload(Post.comments)
+    )
+)
+```
+
+### raiseload (Prevent Accidental Lazy Loads)
+
+```python
+from sqlalchemy.orm import raiseload
+
+result = await session.execute(
+    select(User)
+    .options(raiseload("*"))  # Raise error on any lazy load attempt
+    .options(selectinload(User.posts))  # Explicitly load what you need
+)
+```
+
+**When to use:** In development/testing to catch N+1 queries early.
+
+---
+
+## Query Optimization
+
+### Selecting Specific Columns
+
+```python
+# Only load the columns you need
+result = await session.execute(
+    select(User.id, User.email, User.display_name)
+    .where(User.is_active == True)
+)
+rows = result.all()  # Returns tuples, not User instances
+```
+
+### Aggregation
+
+```python
+from sqlalchemy import func
+
+# Count active users
+result = await session.execute(
+    select(func.count()).select_from(User).where(User.is_active == True)
+)
+count = result.scalar_one()
+
+# Group by with count
+result = await session.execute(
+    select(User.role, func.count(User.id).label("count"))
+    .group_by(User.role)
+)
+role_counts = result.all()
+```
+
+### Exists Check
+
+```python
+from sqlalchemy import exists
+
+# Efficient existence check (doesn't load the row)
+result = await session.execute(
+    select(exists().where(User.email == email))
+)
+email_exists = result.scalar_one()
+```
+
+### Pagination with Cursor
+
+```python
+async def list_users_cursor(
+    session: AsyncSession,
+    *,
+    after_id: int | None = None,
+    limit: int = 20,
+) -> tuple[list[User], bool]:
+    query = select(User).order_by(User.id)
+
+    if after_id is not None:
+        query = query.where(User.id > after_id)
+
+    # Fetch one extra to determine has_more
+    query = query.limit(limit + 1)
+
+    result = await session.execute(query)
+    users = list(result.scalars().all())
+
+    has_more = len(users) > limit
+    if has_more:
+        users = users[:limit]
+
+    return users, has_more
+```
 
 ---
 
 ## Bulk Operations
 
-### bulk_save_objects (ORM-level, slower)
-
-Triggers ORM events and identity map management. Use only when you need ORM
-hooks.
-
-```python
-users = [User(name=f"user_{i}") for i in range(10_000)]
-session.add_all(users)
-await session.flush()
-```
-
-### bulk_insert_mappings (Faster, Bypasses ORM Events)
-
-Accepts plain dictionaries. Skips most ORM overhead.
-
-```python
-await session.execute(
-    User.__table__.insert(),
-    [{"name": f"user_{i}", "email": f"user_{i}@example.com"} for i in range(10_000)],
-)
-await session.commit()
-```
-
-### Core execute for Raw Performance
-
-The fastest path. Bypasses the ORM entirely.
+### Bulk Insert
 
 ```python
 from sqlalchemy import insert
 
-stmt = insert(User).values(
-    [{"name": f"user_{i}", "email": f"user_{i}@example.com"} for i in range(10_000)]
-)
-await session.execute(stmt)
-await session.commit()
+# Insert many rows efficiently
+users_data = [
+    {"email": "a@example.com", "display_name": "Alice", "hashed_password": "..."},
+    {"email": "b@example.com", "display_name": "Bob", "hashed_password": "..."},
+]
+await session.execute(insert(User), users_data)
+await session.flush()
 ```
 
-### Bulk Upsert (PostgreSQL)
+### Bulk Update
 
 ```python
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import update
 
-stmt = pg_insert(User).values(rows)
-stmt = stmt.on_conflict_do_update(
-    index_elements=["email"],
-    set_={"name": stmt.excluded.name, "updated_at": func.now()},
+# Update many rows at once
+await session.execute(
+    update(User)
+    .where(User.last_login < cutoff_date)
+    .values(is_active=False)
 )
-await session.execute(stmt)
+await session.flush()
 ```
 
----
-
-## Relationship Loading Strategies with Code Examples
-
-### Nested Eager Loading
+### Bulk Delete
 
 ```python
-stmt = (
-    select(User)
-    .options(
-        selectinload(User.orders).selectinload(Order.items),
-        selectinload(User.profile),
-    )
+from sqlalchemy import delete
+
+await session.execute(
+    delete(User).where(User.is_active == False)
 )
-```
-
-### Conditional Loading with contains_eager
-
-Use when you already have a join in the query and want SQLAlchemy to populate
-the relationship from the joined data instead of issuing a separate query.
-
-```python
-from sqlalchemy.orm import contains_eager
-
-stmt = (
-    select(Order)
-    .join(Order.user)
-    .options(contains_eager(Order.user))
-    .where(User.is_active == True)
-)
-```
-
-### Defer / Undefer Columns
-
-```python
-from sqlalchemy.orm import defer, undefer
-
-# Skip the heavy 'body' column by default
-stmt = select(Article).options(defer(Article.body))
-
-# Explicitly load it when needed
-stmt = select(Article).options(undefer(Article.body))
+await session.flush()
 ```
 
 ---
@@ -223,121 +210,85 @@ stmt = select(Article).options(undefer(Article.body))
 
 ```python
 engine = create_async_engine(
-    DATABASE_URL,
-    pool_size=20,        # Steady-state connections kept open
-    max_overflow=10,     # Extra connections allowed above pool_size under burst
-    pool_timeout=30,     # Seconds to wait for a connection before raising
-    pool_recycle=1800,   # Seconds before a connection is recycled (avoid stale)
-    pool_pre_ping=True,  # Verify connection liveness before checkout
+    database_url,
+    pool_size=5,          # Steady-state connections
+    max_overflow=10,      # Additional connections under load
+    pool_pre_ping=True,   # Verify connections before use
+    pool_recycle=3600,    # Recycle connections after 1 hour
+    pool_timeout=30,      # Wait time for available connection
+    echo=False,           # Set True for SQL logging in development
 )
 ```
 
-### Guidelines
+**Guidelines:**
+- `pool_size`: Set to expected concurrent database sessions (usually matches web worker count)
+- `max_overflow`: Additional connections allowed above pool_size during traffic spikes
+- `pool_pre_ping`: Always enable to handle database restarts gracefully
+- `pool_recycle`: Set below the database's connection timeout (PostgreSQL default: 8 hours)
 
-| Parameter      | Default | Recommendation                                      |
-|----------------|---------|-----------------------------------------------------|
-| pool_size      | 5       | Set to expected concurrent request count             |
-| max_overflow   | 10      | Keep equal to or less than pool_size                 |
-| pool_timeout   | 30      | Lower in latency-sensitive services (e.g., 10)       |
-| pool_recycle   | -1      | Set to 1800 for MySQL/Aurora; PostgreSQL can be -1   |
-| pool_pre_ping  | False   | Always True in production to avoid broken connections|
+---
 
-### Monitoring Pool Health
+## Async Session Patterns
+
+### Request-Scoped Session
 
 ```python
-from sqlalchemy import event
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_factory() as session:
+        async with session.begin():
+            yield session
+            # Auto-commits on success, rolls back on exception
+```
 
-@event.listens_for(engine.sync_engine, "checkout")
-def on_checkout(dbapi_conn, connection_rec, connection_proxy):
-    logger.debug("Connection checked out from pool")
+### Background Task Session
 
-@event.listens_for(engine.sync_engine, "checkin")
-def on_checkin(dbapi_conn, connection_rec):
-    logger.debug("Connection returned to pool")
+```python
+async def send_welcome_email(user_id: int) -> None:
+    """Background task — creates its own session."""
+    async with async_session_factory() as session:
+        async with session.begin():
+            user = await session.get(User, user_id)
+            if user:
+                await email_service.send(user.email, "Welcome!")
+```
+
+### Test Session with Rollback
+
+```python
+@pytest.fixture
+async def db_session(engine):
+    async with engine.connect() as conn:
+        await conn.begin()
+        async_session = AsyncSession(bind=conn, expire_on_commit=False)
+
+        yield async_session
+
+        await async_session.close()
+        await conn.rollback()
 ```
 
 ---
 
-## Common Pitfalls
-
-### 1. Detached Instance Errors
-
-**Problem:** Accessing a relationship on an object after the session is closed.
+## Index Strategy
 
 ```python
-async with async_session_factory() as session:
-    user = await session.get(User, 1)
+from sqlalchemy import Index
 
-# Session is closed -- this raises DetachedInstanceError
-print(user.orders)
+class Order(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    # Composite index for common query pattern
+    __table_args__ = (
+        Index("ix_orders_user_status", "user_id", "status"),
+        Index(
+            "ix_orders_active",
+            "user_id", "created_at",
+            postgresql_where=(status != "cancelled"),  # Partial index
+        ),
+    )
 ```
-
-**Fix:** Eagerly load everything you need before closing the session, or set
-`expire_on_commit=False`.
-
-### 2. Lazy Loading in Async Context
-
-**Problem:** SQLAlchemy lazy loading triggers implicit IO, which is forbidden in
-an async session. You will get `MissingGreenlet` errors.
-
-```python
-# This will FAIL in async
-user = await session.get(User, 1)
-print(user.orders)  # MissingGreenlet error
-```
-
-**Fix:** Always use explicit eager loading (`selectinload`, `joinedload`) or
-`await session.run_sync()` as an escape hatch.
-
-```python
-# Escape hatch (not recommended for production hot paths)
-def _load_orders(session):
-    user = session.get(User, 1)
-    _ = user.orders  # Triggers lazy load inside sync context
-    return user
-
-user = await session.run_sync(_load_orders)
-```
-
-### 3. Session Scope Too Wide
-
-**Problem:** Reusing a session across multiple requests leads to stale data and
-concurrency bugs.
-
-**Fix:** Create one session per request (see `get_async_session` above).
-
-### 4. Forgetting unique() with joinedload
-
-**Problem:** `joinedload` duplicates parent rows. Without `unique()`, you get
-duplicate objects in results.
-
-```python
-# Wrong
-result = await session.execute(stmt)
-orders = result.scalars().all()  # May contain duplicates
-
-# Correct
-orders = result.unique().scalars().all()
-```
-
-### 5. N+1 Query in Loops
-
-**Problem:** Iterating over results and accessing a relationship inside the loop.
-
-```python
-users = (await session.execute(select(User))).scalars().all()
-for user in users:
-    print(user.orders)  # Triggers a query per user -- N+1
-```
-
-**Fix:** Use `selectinload(User.orders)` in the original query.
-
-### 6. Mixing sync and async engines
-
-**Problem:** Using a synchronous engine URL (`postgresql://`) with
-`create_async_engine`.
-
-**Fix:** Always use the async driver variant:
-- PostgreSQL: `postgresql+asyncpg://`
-- MySQL: `mysql+aiomysql://`
-- SQLite: `sqlite+aiosqlite://`

@@ -22,518 +22,413 @@ context: fork
 
 ## When to Use
 
-Use this skill when you need to:
+Activate this skill when:
+- Setting up or modifying CI/CD pipelines with GitHub Actions
+- Deploying application changes to staging or production environments
+- Planning environment promotion strategies (dev -> staging -> production)
+- Implementing pre-deployment validation gates
+- Configuring health checks and smoke tests for deployed services
+- Planning or executing rollback procedures after a failed deployment
+- Setting up canary or blue-green deployment strategies
+- Troubleshooting deployment failures or pipeline errors
 
-- **Deploy applications** to staging or production environments
-- **Create CI/CD pipelines** using GitHub Actions for Python/React projects
-- **Troubleshoot deployment failures** including failed builds, health check failures, or environment misconfigurations
-- **Plan rollback strategies** for failed deployments or production regressions
-- **Configure environment promotion** from staging to production with proper approvals
-- **Set up canary deployments** with gradual traffic shifting
-
-Do **NOT** use this skill for:
-
-- Docker image building or Dockerfile optimization -- use `docker-best-practices` instead
-- Production incident response or triage -- use `incident-response` instead
-- Monitoring and alerting configuration -- use `monitoring-setup` instead
+Do NOT use this skill for:
+- Building or optimizing Docker images (use `docker-best-practices`)
+- Responding to production incidents (use `incident-response`)
+- Setting up monitoring or alerting (use `monitoring-setup`)
+- Infrastructure provisioning (Terraform, CloudFormation)
 
 ## Instructions
 
-### Pipeline Stages
+### Pipeline Stages Overview
 
-Every deployment follows four sequential stages. Each stage must pass before the next begins.
+Every deployment follows a strict four-stage pipeline. No stage may be skipped.
 
-#### Stage 1: Build
+```
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐
+│  BUILD   │───>│   TEST   │───>│ STAGING  │───>│  PRODUCTION  │
+│          │    │          │    │          │    │              │
+│ • Lint   │    │ • Unit   │    │ • Deploy │    │ • Canary 10% │
+│ • Build  │    │ • Integ  │    │ • Smoke  │    │ • Monitor    │
+│ • Image  │    │ • E2E    │    │ • QA     │    │ • Full 100%  │
+└──────────┘    └──────────┘    └──────────┘    └──────────────┘
+     Gate:           Gate:           Gate:            Gate:
+  Build pass     Tests pass     Smoke pass      Health checks
+  No lint err    Coverage ≥80%  Manual approve  Error rate <1%
+```
 
-The build stage compiles, bundles, and packages the application into deployable artifacts.
+### Stage 1: Build
 
-**Python Backend (FastAPI):**
-- Install dependencies from `requirements.txt` or `pyproject.toml` using pip
-- Run `python -m compileall` to verify no syntax errors
-- Build the Docker image using the multi-stage Dockerfile
-- Tag the image with the git SHA and semantic version: `app-backend:1.2.3-abc1234`
-- Push the image to the container registry
+Build stage validates code quality and produces deployable artifacts.
 
-**React Frontend:**
-- Install dependencies with `npm ci` (never `npm install` in CI)
-- Run `npm run build` to produce the production bundle
-- Build the Docker image (nginx serving static assets)
-- Tag the image with the git SHA and semantic version: `app-frontend:1.2.3-abc1234`
-- Push the image to the container registry
+**Steps:**
+1. **Lint and format check** -- Run `ruff check` and `ruff format --check` for Python, `eslint` and `prettier --check` for React
+2. **Type check** -- Run `mypy` for Python, `tsc --noEmit` for TypeScript
+3. **Build artifacts** -- Build Python wheel/sdist, build React production bundle
+4. **Build Docker images** -- Tag with git SHA and branch name
 
-**Build Validation:**
-- Ensure the build completes without warnings treated as errors
-- Verify the Docker image starts and responds to a basic health check
-- Record build metadata: git SHA, branch, timestamp, builder version
+**Gate criteria:** All checks pass, images build successfully.
 
-#### Stage 2: Test
+```yaml
+# GitHub Actions build stage
+build:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - name: Lint Python
+      run: ruff check src/ && ruff format --check src/
+    - name: Type check Python
+      run: mypy src/
+    - name: Build backend image
+      run: docker build -t app-backend:${{ github.sha }} -f Dockerfile.backend .
+    - name: Build frontend
+      run: npm ci && npm run build
+    - name: Build frontend image
+      run: docker build -t app-frontend:${{ github.sha }} -f Dockerfile.frontend .
+```
 
-The test stage runs the full test suite in the CI environment against the built artifacts.
+### Stage 2: Test
 
-**Test Execution:**
-- Run unit tests with `pytest --tb=short --junitxml=results.xml`
-- Run integration tests against test database and Redis instances
-- Run frontend tests with `npm test -- --ci --coverage`
-- Run end-to-end tests with Playwright against the staged containers
-- Run linting: `ruff check .` for Python, `eslint .` for JavaScript/TypeScript
-- Run type checking: `mypy` for Python, `tsc --noEmit` for TypeScript
+Run the full test suite. Never skip tests for "urgent" deployments.
 
-**Test Gates:**
-- All tests must pass (zero failures)
-- Code coverage must not drop below the configured threshold (default 80%)
-- No critical or high security vulnerabilities from dependency scanning
-- Linting and type checking produce zero errors
+**Steps:**
+1. **Unit tests** -- `pytest tests/unit/ -v --cov=src --cov-report=xml`
+2. **Integration tests** -- `pytest tests/integration/ -v` (requires test database)
+3. **Frontend tests** -- `npm test -- --coverage`
+4. **E2E tests** -- `npx playwright test` against a test environment
+5. **Security scan** -- `pip-audit` for Python, `npm audit` for Node
 
-#### Stage 3: Staging
+**Gate criteria:** All tests pass, coverage >= 80%, no critical vulnerabilities.
 
-The staging stage deploys to a production-like environment for validation.
+```yaml
+# GitHub Actions test stage
+test:
+  needs: build
+  runs-on: ubuntu-latest
+  services:
+    postgres:
+      image: postgres:16
+      env:
+        POSTGRES_DB: testdb
+        POSTGRES_PASSWORD: testpass
+      ports: ['5432:5432']
+    redis:
+      image: redis:7-alpine
+      ports: ['6379:6379']
+  steps:
+    - uses: actions/checkout@v4
+    - name: Run unit tests
+      run: pytest tests/unit/ -v --cov=src --cov-report=xml
+    - name: Run integration tests
+      run: pytest tests/integration/ -v
+      env:
+        DATABASE_URL: postgresql://postgres:testpass@localhost:5432/testdb
+    - name: Check coverage threshold
+      run: coverage report --fail-under=80
+```
 
-**Staging Deployment:**
-- Deploy the tagged images to the staging environment
-- Run database migrations with `alembic upgrade head`
-- Wait for all services to report healthy via health check endpoints
-- Run smoke tests against staging endpoints
+### Stage 3: Staging Deployment
 
-**Staging Validation Checklist:**
-- All health check endpoints return 200 OK
-- Critical user flows work end-to-end (login, core features, checkout)
-- No error spikes in staging logs for 5 minutes post-deploy
-- API response times within acceptable thresholds (p99 < 500ms)
-- Database migration completed without errors
-- Frontend loads and renders without console errors
+Deploy to staging environment for validation before production.
 
-#### Stage 4: Production
+**Pre-deployment checklist:**
+- [ ] All tests pass in CI
+- [ ] Database migrations tested with `scripts/migration-dry-run.sh`
+- [ ] Environment variables verified for staging
+- [ ] Feature flags configured appropriately
+- [ ] Dependent services verified available
 
-The production stage uses canary deployment for safe rollout.
+**Steps:**
+1. **Run migration dry-run** -- Validate Alembic migrations against staging DB clone
+2. **Deploy to staging** -- Push images, apply migrations, restart services
+3. **Run smoke tests** -- Execute `scripts/smoke-test.sh` against staging URL
+4. **Run health checks** -- Execute `scripts/health-check.py` for all endpoints
+5. **Manual QA** -- Team verifies critical user flows
 
-**Canary Rollout Strategy:**
+**Gate criteria:** Smoke tests pass, health checks green, QA sign-off.
 
-Step 1 -- Canary at 10%:
-- Route 10% of production traffic to the new version
-- Monitor error rates, latency, and business metrics for 5 minutes
-- Compare canary metrics against the baseline (current production)
-- Automatic rollback if error rate exceeds 1% above baseline
+### Stage 4: Production Deployment
 
-Step 2 -- Canary at 50%:
-- If 10% canary is healthy, increase to 50% traffic
-- Monitor for an additional 5 minutes
-- Validate that latency p99 remains within 20% of baseline
-- Automatic rollback if any health check fails
+Production deployment uses canary strategy to minimize risk.
 
-Step 3 -- Full rollout at 100%:
-- If 50% canary is healthy, promote to 100% traffic
-- Monitor for 15 minutes post-rollout
-- Keep the previous version available for instant rollback
-- Mark deployment as successful after monitoring period
+**Canary deployment steps:**
+1. **Deploy canary (10% traffic)** -- Route 10% of traffic to new version
+2. **Monitor for 10 minutes** -- Watch error rates, latency, resource usage
+3. **Evaluate canary** -- If error rate < 1% and p99 latency within 20% of baseline, proceed
+4. **Ramp to 50%** -- Increase traffic to 50%, monitor for 5 minutes
+5. **Full rollout (100%)** -- Complete the deployment
+6. **Post-deployment smoke tests** -- Run full smoke test suite
 
-**Production Monitoring During Deploy:**
-- Watch error rate dashboard in real-time
-- Monitor application latency percentiles (p50, p95, p99)
-- Check business metrics (transaction success rate, sign-up flow completion)
-- Verify no memory leaks or CPU spikes in container metrics
+```
+Canary Timeline:
+  0 min    10 min   15 min   20 min
+  |--------|--------|--------|
+  10%      Check    50%      100%
+  Deploy   Metrics  Ramp     Full
+           OK?      Up       Rollout
+           |
+           No -> Rollback immediately
+```
+
+**Automatic rollback triggers:**
+- Error rate exceeds 5% during canary
+- p99 latency increases by more than 50%
+- Health check failures on canary instances
+- Memory usage exceeds 90% threshold
 
 ### Pre-Deployment Validation
 
-Before any deployment to staging or production, verify the following:
+Run these validations before any deployment. Use `scripts/deploy.sh --validate-only` for a dry run.
 
-1. **CI Pipeline is Green**
-   - All tests pass on the target branch
-   - No pending or failed checks on the commit being deployed
-   - Branch is up to date with main (no merge conflicts)
+**Backend validation:**
+```bash
+# Verify migrations are consistent
+alembic check
 
-2. **Security Scan is Clean**
-   - Run `trivy image <image>` against the Docker images
-   - No critical or high CVEs in dependencies
-   - `pip-audit` or `npm audit` shows no actionable vulnerabilities
+# Verify no pending migrations
+alembic heads --verbose
 
-3. **Database Migration Dry-Run**
-   - Run `alembic upgrade head --sql` to generate migration SQL
-   - Review the SQL for destructive operations (DROP TABLE, DROP COLUMN)
-   - Verify migration is backward-compatible with the current running version
-   - Test rollback: `alembic downgrade -1` works without data loss
+# Test migration against staging clone
+./skills/deployment-pipeline/scripts/migration-dry-run.sh \
+  --db-url "$STAGING_DB_URL" \
+  --output-dir ./deploy-validation/
 
-4. **Staging Smoke Tests Pass**
-   - Health endpoints respond correctly
-   - Authentication flow works
-   - Core API endpoints return expected responses
-   - Frontend renders without errors
+# Verify all dependencies are pinned
+pip-compile --dry-run requirements.in
+```
+
+**Frontend validation:**
+```bash
+# Verify build succeeds
+npm run build
+
+# Check bundle size limits
+npx bundlesize
+
+# Verify environment variables are set
+node -e "const vars = ['REACT_APP_API_URL']; vars.forEach(v => { if(!process.env[v]) throw new Error(v + ' not set') })"
+```
 
 ### Environment Promotion
 
-**Promotion Flow: Staging to Production**
+Strict rules govern how changes move between environments.
 
-Promotion requires:
-- All staging validation checks passing
-- Manual approval from at least one team lead (configured in GitHub Actions)
-- No active P1 or P2 incidents
-- Deployment window compliance (avoid Fridays 4pm+, weekends, holidays)
+| Aspect | Development | Staging | Production |
+|--------|-------------|---------|------------|
+| Deploy trigger | Push to `main` | Manual or auto after tests | Manual approval required |
+| Database | Local PostgreSQL | Staging PostgreSQL | Production PostgreSQL (RDS) |
+| Secrets | `.env` file | GitHub Secrets | AWS Secrets Manager |
+| Log level | DEBUG | INFO | WARNING |
+| Feature flags | All enabled | Per-feature | Gradual rollout |
+| SSL | Self-signed | ACM cert | ACM cert |
+| Replicas | 1 | 2 | 3+ (auto-scaled) |
 
-**Environment Variables:**
-
-Each environment has its own configuration. Never share secrets across environments.
-
-```
-# Staging
-DATABASE_URL=postgresql://user:pass@staging-db:5432/app_staging
-REDIS_URL=redis://staging-redis:6379/0
-API_BASE_URL=https://staging-api.example.com
-LOG_LEVEL=DEBUG
-ENABLE_DEBUG_TOOLBAR=true
-
-# Production
-DATABASE_URL=postgresql://user:pass@prod-db:5432/app_prod
-REDIS_URL=redis://prod-redis:6379/0
-API_BASE_URL=https://api.example.com
-LOG_LEVEL=INFO
-ENABLE_DEBUG_TOOLBAR=false
-```
-
-**Secrets Management:**
-- Store secrets in GitHub Actions secrets or a dedicated vault
-- Never commit secrets to the repository
-- Rotate secrets on a regular schedule (90 days minimum)
-- Use separate secrets for each environment
-- Audit secret access logs quarterly
+**Promotion rules:**
+1. Code must pass ALL gates in the previous stage
+2. Database migrations must be backward-compatible (no column drops without migration window)
+3. Environment variables must be configured BEFORE deployment
+4. Feature flags must be set to correct state BEFORE deployment
+5. Rollback plan must be documented BEFORE production deployment
 
 ### Health Checks
 
-Every deployed service must expose health check endpoints.
+Every service exposes health check endpoints. The deployment pipeline validates these after every deployment.
 
-**Liveness Endpoint: `/health`**
+**Required health check endpoints:**
 
-Returns 200 if the process is alive and can handle requests.
+```python
+# FastAPI health check endpoints
+@router.get("/health")
+async def health():
+    """Basic liveness check -- returns 200 if process is running."""
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
-```json
-{
-  "status": "healthy",
-  "version": "1.2.3",
-  "git_sha": "abc1234",
-  "uptime_seconds": 3600
-}
+@router.get("/health/ready")
+async def readiness(db: AsyncSession = Depends(get_db)):
+    """Readiness check -- verifies all dependencies are accessible."""
+    checks = {}
+    # Database
+    try:
+        await db.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        checks["database"] = f"error: {str(e)}"
+    # Redis
+    try:
+        await redis.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {str(e)}"
+
+    all_ok = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        status_code=200 if all_ok else 503,
+        content={"status": "ready" if all_ok else "not_ready", "checks": checks}
+    )
 ```
 
-The liveness check should be lightweight. It verifies:
-- The application process is running
-- The HTTP server is accepting connections
-- The event loop is not blocked
+**Health check strategy during deployment:**
 
-**Readiness Endpoint: `/ready`**
-
-Returns 200 only if all dependencies are reachable and the service can handle traffic.
-
-```json
-{
-  "status": "ready",
-  "checks": [
-    {"name": "database", "status": "ok", "latency_ms": 2},
-    {"name": "redis", "status": "ok", "latency_ms": 1},
-    {"name": "auth-service", "status": "ok", "latency_ms": 15}
-  ]
-}
+```
+After deploy:
+  Wait 10s -> Check /health (liveness)
+  Wait 5s  -> Check /health/ready (readiness)
+  Wait 5s  -> Check /health/ready again (stability)
+  All pass -> Deployment successful
+  Any fail -> Trigger rollback
 ```
 
-Returns 503 if any critical dependency is unreachable:
-
-```json
-{
-  "status": "not_ready",
-  "checks": [
-    {"name": "database", "status": "ok", "latency_ms": 2},
-    {"name": "redis", "status": "error", "error": "Connection refused"},
-    {"name": "auth-service", "status": "ok", "latency_ms": 15}
-  ]
-}
+Use `scripts/health-check.py` for automated health validation:
+```bash
+python scripts/health-check.py \
+  --url https://staging.example.com \
+  --retries 3 \
+  --timeout 30 \
+  --output-dir ./health-results/
 ```
 
-**Dependency Checks:**
-- **Database (PostgreSQL):** Execute `SELECT 1` with a 2-second timeout
-- **Redis:** Execute `PING` with a 1-second timeout
-- **External Services:** HTTP GET to their health endpoints with a 5-second timeout
+### Rollback Procedure
 
-**Health Check Configuration in Docker Compose / Orchestrator:**
+When a deployment fails, follow this rollback procedure immediately. See `references/rollback-runbook.md` for the full step-by-step guide.
+
+**Automated rollback (preferred):**
+```bash
+# Roll back to previous version
+./skills/deployment-pipeline/scripts/deploy.sh \
+  --rollback \
+  --version "$PREVIOUS_VERSION" \
+  --output-dir ./rollback-results/
+```
+
+**Rollback decision matrix:**
+
+| Signal | Action | Timeline |
+|--------|--------|----------|
+| Error rate > 5% | Automatic rollback | Immediate |
+| p99 latency > 2x baseline | Automatic rollback | Immediate |
+| Health check failures | Automatic rollback | After 2 retries |
+| User-reported issues | Manual rollback decision | Within 15 minutes |
+| Data inconsistency | Stop traffic, investigate | Immediate |
+
+**Database rollback considerations:**
+- Forward-only migrations are preferred; avoid `alembic downgrade` in production
+- If migration must be reversed, use a new forward migration to undo changes
+- Never drop columns or tables in the same release that removes code references
+- Use a two-phase approach: Phase 1 deploys new code (backward compatible), Phase 2 removes old columns
+
+### GitHub Actions CI/CD
+
+The full CI/CD pipeline is defined in `.github/workflows/deploy.yml`. See `references/github-actions-template.yml` for the complete template.
+
+**Key workflow features:**
+- **Matrix testing** -- Test against Python 3.12 and 3.13
+- **Caching** -- Cache pip, npm, and Docker layers for faster builds
+- **Concurrency** -- Cancel in-progress deployments when new commits arrive
+- **Environment protection** -- Require manual approval for production
+- **Secrets management** -- Use GitHub environment secrets per stage
 
 ```yaml
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-  interval: 30s
-  timeout: 5s
-  retries: 3
-  start_period: 10s
-```
-
-### Rollback Procedures
-
-When a deployment causes issues, follow this rollback procedure:
-
-**Step 1: Identify the Failure**
-- Alert fires or manual detection of degraded service
-- Confirm the issue correlates with the recent deployment
-- Check error logs, metrics dashboards, and health check status
-
-**Step 2: Trigger Rollback**
-- Revert traffic to the previous known-good version
-- For canary deployments: set canary weight to 0% and route all traffic to stable
-- For full deployments: redeploy the previous image tag
-- Command: `gh workflow run rollback.yml -f version=<previous-tag>`
-
-**Step 3: Verify Health After Rollback**
-- Confirm all health check endpoints return 200
-- Verify error rates return to baseline within 5 minutes
-- Check that the reverted version serves traffic correctly
-- Run smoke tests against production
-
-**Step 4: Notify the Team**
-- Post in the deployment channel: rollback performed, reason, affected version
-- Update the status page if users were impacted
-- Tag the on-call engineer if the issue requires deeper investigation
-
-**Step 5: Create Incident Ticket**
-- Document the failed deployment: version, time, symptoms, rollback time
-- Link to relevant logs, metrics, and error traces
-- Assign to the team that authored the changes
-- Schedule a review to understand the root cause before re-deploying
-
-**Database Migration Rollback:**
-- Run `alembic downgrade -1` to revert the last migration
-- Verify data integrity after rollback
-- If the migration was destructive (data deleted), restore from backup
-- Always test migration rollback in staging before production
-
-### GitHub Actions Workflows
-
-**Workflow Structure:**
-
-The CI/CD pipeline is defined in `.github/workflows/deploy.yml`.
-
-```yaml
-name: Deploy Pipeline
-
+# Key sections of the workflow
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Target environment'
-        required: true
-        default: 'staging'
         type: choice
-        options:
-          - staging
-          - production
+        options: [staging, production]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  test:
-    needs: build
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: test_db
-          POSTGRES_PASSWORD: test_pass
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-      - run: pip install -r requirements.txt
-      - run: pytest --tb=short --junitxml=results.xml
-      - run: ruff check .
-
-  deploy-staging:
-    needs: test
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: staging
-    steps:
-      - name: Deploy to staging
-        run: |
-          echo "Deploying ${{ needs.build.outputs.image-tag }} to staging"
-          # Deploy commands here
-      - name: Run smoke tests
-        run: |
-          curl -f https://staging-api.example.com/health
-          pytest tests/smoke/ --base-url=https://staging-api.example.com
-
-  deploy-production:
-    needs: deploy-staging
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://api.example.com
-    steps:
-      - name: Canary 10%
-        run: echo "Setting canary weight to 10%"
-      - name: Monitor canary
-        run: sleep 300 && echo "Canary metrics OK"
-      - name: Full rollout
-        run: echo "Promoting to 100%"
+  build:    # Stage 1
+  test:     # Stage 2 (needs: build)
+  staging:  # Stage 3 (needs: test)
+  production:  # Stage 4 (needs: staging, manual approval)
 ```
 
-**Job Dependencies:**
-- `test` depends on `build` (needs the built image)
-- `deploy-staging` depends on `test` (needs all tests passing)
-- `deploy-production` depends on `deploy-staging` (needs staging validation)
+### Canary Deployment
 
-**Caching Strategy:**
-- Python pip packages: `actions/setup-python` with `cache: 'pip'`
-- Node modules: `actions/setup-node` with `cache: 'npm'`
-- Docker layers: GitHub Actions cache (`type=gha`)
-- Playwright browsers: cache `~/.cache/ms-playwright`
+Canary deployment routes a small percentage of traffic to the new version before full rollout.
 
-**Secrets Configuration:**
-- `DOCKER_REGISTRY_TOKEN` -- for pushing images to the container registry
-- `DATABASE_URL` -- environment-specific database connection string
-- `DEPLOY_KEY` -- SSH key or token for deployment
-- Store all secrets in GitHub Actions settings, never in workflow files
+**Implementation with Docker and Nginx:**
 
-## Examples
-
-### Deploy FastAPI + React to Production with Canary Rollout
-
-Scenario: You have a FastAPI backend and React frontend ready to deploy after merging to main.
-
-**Step 1: Verify the build.**
-
-Confirm the CI pipeline has completed successfully on the main branch:
-
-```bash
-gh run list --branch main --limit 5
+```nginx
+# nginx canary configuration
+upstream backend {
+    server backend-stable:8000 weight=9;   # 90% to stable
+    server backend-canary:8000 weight=1;   # 10% to canary
+}
 ```
 
-Check the latest run status:
-
-```bash
-gh run view <run-id>
-```
-
-**Step 2: Confirm staging deployment.**
-
-Verify staging health:
-
-```bash
-curl -s https://staging-api.example.com/health | jq .
-curl -s https://staging-api.example.com/ready | jq .
-```
-
-Run smoke tests against staging:
-
-```bash
-pytest tests/smoke/ --base-url=https://staging-api.example.com -v
-```
-
-**Step 3: Trigger production deployment.**
-
-If staging is healthy and smoke tests pass:
-
-```bash
-gh workflow run deploy.yml -f environment=production
-```
-
-**Step 4: Monitor the canary.**
-
-Watch the canary deployment progress:
-
-```bash
-gh run watch <run-id>
-```
-
-Check production health at each canary stage:
-
-```bash
-curl -s https://api.example.com/health | jq .
-```
-
-**Step 5: Verify full rollout.**
-
-After the deployment completes:
-
-```bash
-curl -s https://api.example.com/health | jq .
-curl -s https://api.example.com/ready | jq .
-```
-
-Confirm the version matches the expected release:
-
-```bash
-curl -s https://api.example.com/health | jq '.version, .git_sha'
-```
-
-## Edge Cases
-
-### Database Migration with Rollback
-
-When a deployment includes database schema changes, extra caution is required.
-
-**Problem:** A migration adds a NOT NULL column without a default value, breaking the running application before the new code is deployed.
-
-**Solution: Expand-and-Contract Pattern**
-
-1. **Expand (Migration 1):** Add the column as nullable with a default value
-2. **Deploy new code** that writes to the new column
-3. **Backfill** existing rows with the appropriate value
-4. **Contract (Migration 2):** Add the NOT NULL constraint after all rows are populated
+**Canary evaluation criteria:**
 
 ```python
-# Migration 1: Expand
-def upgrade():
-    op.add_column('users', sa.Column('email_verified', sa.Boolean(), nullable=True, server_default='false'))
-
-def downgrade():
-    op.drop_column('users', 'email_verified')
-
-# Migration 2: Contract (deployed later)
-def upgrade():
-    op.alter_column('users', 'email_verified', nullable=False)
-
-def downgrade():
-    op.alter_column('users', 'email_verified', nullable=True)
+# Canary health evaluation
+def evaluate_canary(metrics: dict) -> bool:
+    """Return True if canary is healthy enough to proceed."""
+    checks = [
+        metrics["error_rate"] < 0.01,           # < 1% error rate
+        metrics["p99_latency_ms"] < 500,         # p99 under 500ms
+        metrics["memory_usage_pct"] < 85,        # Memory under 85%
+        metrics["cpu_usage_pct"] < 75,           # CPU under 75%
+        metrics["successful_health_checks"] >= 3, # 3+ consecutive passes
+    ]
+    return all(checks)
 ```
 
-### Zero-Downtime Deployment
+**Canary monitoring checklist:**
+- [ ] Error rate compared to baseline (must be within 1%)
+- [ ] Latency percentiles (p50, p95, p99) compared to baseline
+- [ ] Resource utilization (CPU, memory) within thresholds
+- [ ] No increase in log error volume
+- [ ] Health check endpoints responding correctly
+- [ ] No degradation in dependent service metrics
 
-**Problem:** During deployment, there is a brief period where old and new versions coexist. API contracts must remain compatible.
+### Deployment Scripts
 
-**Solution:**
-- Ensure backward compatibility: new code handles old request formats
-- Ensure forward compatibility: old code handles new response formats gracefully
-- Use feature flags to toggle new functionality independently of deployment
-- Database migrations must be compatible with both old and new code versions
-- Run both versions simultaneously during the canary phase
+The following scripts automate deployment tasks:
 
-### Secrets Rotation During Deployment
+| Script | Purpose | Usage |
+|--------|---------|-------|
+| `scripts/deploy.sh` | Main deployment orchestration | `./scripts/deploy.sh --env staging --output-dir ./results/` |
+| `scripts/smoke-test.sh` | Post-deployment smoke tests | `./scripts/smoke-test.sh --url https://staging.example.com --output-dir ./results/` |
+| `scripts/health-check.py` | Health endpoint validation | `python scripts/health-check.py --url https://staging.example.com --output-dir ./results/` |
+| `scripts/migration-dry-run.sh` | Test migrations safely | `./scripts/migration-dry-run.sh --db-url $DB_URL --output-dir ./results/` |
 
-**Problem:** A secret (e.g., database password) needs to be rotated, but the application is mid-deployment.
+### Quick Reference
 
-**Solution:**
-1. Add the new secret alongside the old one (dual-read support)
-2. Deploy code that accepts both old and new secrets
-3. Update the secret in the environment configuration
-4. Deploy again to remove support for the old secret
-5. Revoke the old secret
+**Deploy to staging:**
+```bash
+./skills/deployment-pipeline/scripts/deploy.sh \
+  --env staging \
+  --version $(git rev-parse --short HEAD) \
+  --output-dir ./deploy-results/
+```
 
-Never rotate secrets and deploy new code simultaneously. These should be separate operations to isolate failure causes.
+**Deploy to production (with canary):**
+```bash
+./skills/deployment-pipeline/scripts/deploy.sh \
+  --env production \
+  --version $(git rev-parse --short HEAD) \
+  --canary \
+  --output-dir ./deploy-results/
+```
+
+**Run smoke tests:**
+```bash
+./skills/deployment-pipeline/scripts/smoke-test.sh \
+  --url https://staging.example.com \
+  --output-dir ./smoke-results/
+```
+
+**Emergency rollback:**
+```bash
+./skills/deployment-pipeline/scripts/deploy.sh \
+  --rollback \
+  --env production \
+  --version $PREVIOUS_SHA \
+  --output-dir ./rollback-results/
+```

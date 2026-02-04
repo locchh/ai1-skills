@@ -1,150 +1,186 @@
 # Environment Configuration Guide
 
-## Environment Differences Overview
+## Overview
 
-| Setting | Development | Staging | Production |
-|---------|------------|---------|------------|
-| **Debug mode** | Enabled | Enabled | Disabled |
-| **Log level** | DEBUG | INFO | WARNING |
-| **Database** | Local PostgreSQL | Cloud PostgreSQL (small) | Cloud PostgreSQL (HA cluster) |
-| **Redis** | Local Redis | Cloud Redis (single node) | Cloud Redis (cluster, replicas) |
-| **CORS origins** | `localhost:*` | `staging.example.com` | `app.example.com` |
-| **SSL/TLS** | Self-signed / None | Managed cert | Managed cert |
-| **Replicas** | 1 | 1-2 | 3+ (auto-scaling) |
-| **Secrets source** | `.env` file | CI/CD secrets | Vault / cloud secret manager |
-| **Email sending** | Console backend | Sandbox / Mailtrap | Production SMTP / SES |
-| **Feature flags** | All enabled | Selective | Controlled rollout |
-| **Error tracking** | Console output | Sentry (staging project) | Sentry (production project) |
-| **Rate limiting** | Disabled | Relaxed | Strict |
-| **Backups** | None | Daily | Continuous + daily snapshots |
+This document defines the configuration differences between development, staging, and production environments. All environment-specific values are injected via environment variables -- never hardcoded in source.
 
----
+## Environment Comparison Matrix
 
-## Environment Variable Management Strategy
+| Configuration | Development | Staging | Production |
+|---------------|-------------|---------|------------|
+| **Deploy trigger** | Local / push to branch | Push to `main` / manual | Manual approval required |
+| **Base URL** | `http://localhost:8000` | `https://staging.example.com` | `https://api.example.com` |
+| **Frontend URL** | `http://localhost:3000` | `https://staging-app.example.com` | `https://app.example.com` |
+| **Database** | Local PostgreSQL 16 | Staging RDS PostgreSQL 16 | Production RDS PostgreSQL 16 |
+| **Redis** | Local Redis 7 | ElastiCache (single node) | ElastiCache (cluster mode) |
+| **Log level** | `DEBUG` | `INFO` | `WARNING` |
+| **Debug mode** | `True` | `False` | `False` |
+| **SSL/TLS** | Self-signed / none | ACM certificate | ACM certificate |
+| **Replicas** | 1 | 2 | 3+ (auto-scaled) |
+| **Secrets source** | `.env` file | GitHub Secrets | AWS Secrets Manager |
+| **Feature flags** | All enabled | Per-feature | Gradual rollout |
+| **CORS origins** | `*` | Staging domain only | Production domain only |
+| **Rate limiting** | Disabled | Relaxed (100 req/min) | Strict (30 req/min) |
+| **Error reporting** | Console only | Sentry (staging DSN) | Sentry (production DSN) |
+| **Backups** | None | Daily | Hourly + continuous WAL |
 
-### Naming Convention
+## Required Environment Variables
 
-Use a consistent prefix and uppercase with underscores:
+### Backend (FastAPI)
 
+```bash
+# ─── Core ────────────────────────────────────────────────────────────────
+APP_ENV=development|staging|production
+DEBUG=true|false
+SECRET_KEY=<random-64-char-string>
+ALLOWED_HOSTS=localhost,staging.example.com,api.example.com
+
+# ─── Database ────────────────────────────────────────────────────────────
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname
+DATABASE_POOL_SIZE=5|10|20
+DATABASE_MAX_OVERFLOW=10|20|40
+
+# ─── Redis ───────────────────────────────────────────────────────────────
+REDIS_URL=redis://localhost:6379/0
+REDIS_MAX_CONNECTIONS=10|20|50
+
+# ─── Authentication ──────────────────────────────────────────────────────
+JWT_SECRET_KEY=<random-64-char-string>
+JWT_ALGORITHM=HS256
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30|30|15
+
+# ─── CORS ────────────────────────────────────────────────────────────────
+CORS_ORIGINS=*|https://staging-app.example.com|https://app.example.com
+
+# ─── Logging ─────────────────────────────────────────────────────────────
+LOG_LEVEL=DEBUG|INFO|WARNING
+LOG_FORMAT=console|json|json
+SENTRY_DSN=<empty>|<staging-dsn>|<production-dsn>
+
+# ─── External Services ──────────────────────────────────────────────────
+SMTP_HOST=mailhog|ses-smtp.region.amazonaws.com|ses-smtp.region.amazonaws.com
+S3_BUCKET=local-dev|staging-bucket|production-bucket
 ```
-APP_ENV=production
-APP_DEBUG=false
-APP_SECRET_KEY=<generated>
-DATABASE_URL=postgresql://user:pass@host:5432/dbname
-REDIS_URL=redis://host:6379/0
+
+### Frontend (React)
+
+```bash
+# ─── API ─────────────────────────────────────────────────────────────────
+REACT_APP_API_URL=http://localhost:8000|https://staging.example.com|https://api.example.com
+
+# ─── Feature Flags ──────────────────────────────────────────────────────
+REACT_APP_ENABLE_DEBUG_PANEL=true|false|false
+REACT_APP_ENABLE_ANALYTICS=false|true|true
+
+# ─── Error Tracking ─────────────────────────────────────────────────────
+REACT_APP_SENTRY_DSN=<empty>|<staging-dsn>|<production-dsn>
+REACT_APP_SENTRY_ENVIRONMENT=development|staging|production
 ```
-
-### Variable Categories
-
-1. **Application config** (`APP_*`): Runtime behavior settings.
-2. **Database config** (`DATABASE_*`): Connection strings, pool sizes.
-3. **External services** (`SENTRY_DSN`, `SMTP_*`, `AWS_*`): Third-party integrations.
-4. **Feature flags** (`FF_*`): Feature toggles per environment.
-
-### Loading Order (highest priority first)
-
-1. Process environment variables (set by orchestrator / CI/CD)
-2. `.env.<environment>` file (e.g., `.env.staging`)
-3. `.env` file (local development defaults)
-4. Application code defaults (hardcoded fallbacks for non-sensitive values only)
-
----
 
 ## Secrets Management
 
-### Core Principles
+### Development
 
-- **Never commit secrets to version control.** Not even in "private" repos.
-- **Never log secrets.** Redact them in application logs and error reports.
-- **Rotate secrets regularly.** At minimum quarterly, immediately if compromised.
-- **Use short-lived credentials** where possible (e.g., IAM roles, OIDC tokens).
+Store secrets in a `.env` file (never committed to git):
 
-### Per-Environment Strategy
-
-| Environment | Method |
-|-------------|--------|
-| Development | `.env` file (gitignored), dummy/local credentials only |
-| Staging | GitHub Actions secrets or CI/CD platform secret store |
-| Production | Cloud secret manager (AWS Secrets Manager, GCP Secret Manager, HashiCorp Vault) |
-
-### Secrets Rotation Procedure
-
-1. Generate the new secret value.
-2. Update the secret in the secret manager.
-3. Deploy the application (it reads the new secret on startup).
-4. Verify the application functions correctly with the new secret.
-5. Revoke the old secret value.
-
----
-
-## Database Configuration Per Environment
-
-```yaml
-# Development
-DATABASE_URL: "postgresql://dev:dev@localhost:5432/app_dev"
-DATABASE_POOL_SIZE: 5
-DATABASE_ECHO_SQL: true   # Log all SQL queries for debugging
-
-# Staging
-DATABASE_URL: "postgresql://app:${DB_PASSWORD}@staging-db.internal:5432/app_staging"
-DATABASE_POOL_SIZE: 10
-DATABASE_ECHO_SQL: false
-
-# Production
-DATABASE_URL: "postgresql://app:${DB_PASSWORD}@prod-db.internal:5432/app_prod"
-DATABASE_POOL_SIZE: 20
-DATABASE_POOL_OVERFLOW: 10
-DATABASE_ECHO_SQL: false
-DATABASE_SSL_MODE: require
+```bash
+# .env (gitignored)
+SECRET_KEY=dev-secret-key-not-for-production
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/app_dev
+REDIS_URL=redis://localhost:6379/0
+JWT_SECRET_KEY=dev-jwt-secret
 ```
 
----
+### Staging
 
-## Feature Flags Per Environment
+Secrets stored in GitHub Environment Secrets:
 
-Feature flags allow decoupling deployment from release. Configure defaults per
-environment so that new features can be tested in staging before production.
-
-```python
-FEATURE_FLAGS = {
-    "new_checkout_flow": {
-        "development": True,    # Always on for local development
-        "staging": True,        # Enabled for QA testing
-        "production": False,    # Disabled until rollout approved
-    },
-    "v2_search_api": {
-        "development": True,
-        "staging": True,
-        "production": "10%",    # Gradual percentage-based rollout
-    },
-}
+```
+Repository Settings -> Environments -> staging -> Environment secrets
 ```
 
----
+Required secrets:
+- `DATABASE_URL`
+- `REDIS_URL`
+- `SECRET_KEY`
+- `JWT_SECRET_KEY`
+- `SENTRY_DSN`
+- `DOCKER_PASSWORD`
 
-## Logging Configuration Per Environment
+### Production
+
+Secrets stored in AWS Secrets Manager:
+
+```bash
+# Retrieve secrets at startup
+aws secretsmanager get-secret-value \
+  --secret-id prod/app/secrets \
+  --query SecretString \
+  --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' > /tmp/.env
+
+# Or use ECS task definition with secrets references
+```
+
+## Database Configuration
+
+### Connection Pool Settings
+
+| Setting | Development | Staging | Production |
+|---------|-------------|---------|------------|
+| `pool_size` | 5 | 10 | 20 |
+| `max_overflow` | 10 | 20 | 40 |
+| `pool_timeout` | 30s | 30s | 10s |
+| `pool_recycle` | 3600s | 1800s | 900s |
+| `pool_pre_ping` | True | True | True |
+
+### Migration Strategy Per Environment
+
+| Environment | Migration Method | Approval |
+|-------------|-----------------|----------|
+| Development | `alembic upgrade head` (manual) | None |
+| Staging | Automated in CI, dry-run first | Automated |
+| Production | Automated in CI, dry-run + manual approval | Required |
+
+## Health Check Configuration
+
+All environments expose the same health check endpoints but with different thresholds:
 
 ```python
-LOGGING = {
+# config.py
+HEALTH_CHECK_CONFIG = {
     "development": {
-        "level": "DEBUG",
-        "format": "text",       # Human-readable for terminal output
-        "output": "stdout",
+        "timeout_seconds": 10,
+        "check_database": True,
+        "check_redis": True,
+        "check_external_services": False,
     },
     "staging": {
-        "level": "INFO",
-        "format": "json",       # Structured for log aggregation
-        "output": "stdout",     # Collected by container runtime
+        "timeout_seconds": 5,
+        "check_database": True,
+        "check_redis": True,
+        "check_external_services": True,
     },
     "production": {
-        "level": "WARNING",
-        "format": "json",
-        "output": "stdout",
-        "sample_debug": 0.01,   # Sample 1% of requests at DEBUG level
+        "timeout_seconds": 3,
+        "check_database": True,
+        "check_redis": True,
+        "check_external_services": True,
     },
 }
 ```
 
-Structured (JSON) logging is required in staging and production so that log
-aggregation tools (e.g., Datadog, ELK, CloudWatch) can parse and index fields
-for searching and alerting.
+## Deployment Checklist by Environment
+
+### Before Deploying to Staging
+- [ ] All environment variables set in GitHub Secrets
+- [ ] Database migrations tested locally
+- [ ] Feature flags configured in staging config
+- [ ] Dependent services available in staging
+
+### Before Deploying to Production
+- [ ] Staging deployment verified and smoke tests passing
+- [ ] All production environment variables configured in AWS Secrets Manager
+- [ ] Database migration dry-run completed against production clone
+- [ ] Rollback plan documented
+- [ ] On-call engineer notified
+- [ ] Feature flags set for gradual rollout

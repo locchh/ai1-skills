@@ -1,176 +1,175 @@
-# Rollback Procedure Runbook
+# Rollback Runbook
 
-## Decision Tree: Rollback vs. Hotfix
+## Purpose
 
-Before initiating a rollback, determine the correct response:
+Step-by-step procedure for rolling back a failed production deployment. Follow this runbook whenever a deployment causes service degradation, error rate spikes, or health check failures.
 
-| Situation | Action | Rationale |
-|-----------|--------|-----------|
-| Service is completely down | **Rollback immediately** | Restore availability first |
-| Data corruption in progress | **Rollback immediately** | Stop the bleeding |
-| Performance degraded >50% | **Rollback immediately** | Users are actively affected |
-| Minor bug, workaround exists | **Hotfix** | Rollback has its own risks |
-| Feature behaves unexpectedly | **Feature flag off** | Least disruptive option |
-| Intermittent errors <5% of requests | **Investigate first** | May resolve or may need hotfix |
+## Prerequisites
 
-**Rule of thumb:** If you are unsure, rollback. A rollback is always safer than
-debugging under pressure. You can investigate after availability is restored.
+Before starting a rollback:
+- Identify the **previous stable version** (git SHA or tag)
+- Confirm you have access to the deployment tooling
+- Notify the on-call engineer and incident commander
 
----
+## Rollback Decision Criteria
+
+| Signal | Threshold | Action |
+|--------|-----------|--------|
+| Error rate | > 5% of requests | Immediate rollback |
+| p99 latency | > 2x baseline | Immediate rollback |
+| Health check failures | 2+ consecutive | Immediate rollback |
+| Memory usage | > 90% | Immediate rollback |
+| User-reported issues | 3+ unique reports | Evaluate, likely rollback |
 
 ## Step-by-Step Rollback Procedure
 
-### 1. Announce the Incident
-
-- Post in `#incidents` Slack channel: "Initiating rollback of [service] from [version] to [previous version]. Reason: [brief description]."
-- Assign an Incident Commander (IC) if not already designated.
-
-### 2. Identify the Previous Stable Version
+### Step 1: Confirm the Issue (2 minutes max)
 
 ```bash
-# List recent deployments and their image tags
-docker image ls --format "table {{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}" | head -10
+# Check current health status
+python skills/deployment-pipeline/scripts/health-check.py \
+  --url https://api.example.com \
+  --output-dir ./rollback-investigation/
 
-# Or check the deployment history in Kubernetes
-kubectl rollout history deployment/app -n production
+# Check error rate in logs
+curl -s https://api.example.com/health/ready | jq .
+
+# Verify which version is currently deployed
+docker ps --format "table {{.Image}}\t{{.Status}}\t{{.Names}}"
 ```
 
-### 3. Execute the Rollback
+### Step 2: Announce Rollback (1 minute)
 
-**Option A: Docker Compose (single-host deployments)**
+Post in the incident channel:
 
-```bash
-# Pull and restart with the previous known-good image tag
-export IMAGE_TAG="<previous-stable-tag>"
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d --no-build
+```
+@channel ROLLBACK IN PROGRESS
+Environment: production
+Current version: <failing-sha>
+Rolling back to: <previous-stable-sha>
+Reason: <brief description>
+ETA: 5-10 minutes
 ```
 
-**Option B: Kubernetes**
+### Step 3: Execute Rollback (5 minutes)
+
+**Option A: Automated rollback (preferred)**
 
 ```bash
-# Rollback to previous revision
-kubectl rollout undo deployment/app -n production
-
-# Or rollback to a specific revision
-kubectl rollout undo deployment/app -n production --to-revision=<N>
+./skills/deployment-pipeline/scripts/deploy.sh \
+  --rollback \
+  --env production \
+  --version <PREVIOUS_STABLE_SHA> \
+  --output-dir ./rollback-results/
 ```
 
-### 4. Rollback Database Migrations (if applicable)
-
-Only rollback migrations if the new migration is the cause of the issue.
-Ensure the previous code version is compatible with the current schema first.
+**Option B: Manual rollback via Docker**
 
 ```bash
-# Check current migration head
-alembic current
+# Pull previous images
+docker pull registry.example.com/app-backend:<PREVIOUS_SHA>
+docker pull registry.example.com/app-frontend:<PREVIOUS_SHA>
 
-# Downgrade one revision
-alembic downgrade -1
+# Update backend service
+docker service update \
+  --image registry.example.com/app-backend:<PREVIOUS_SHA> \
+  app-backend
 
-# Verify the rollback
-alembic current
+# Update frontend service
+docker service update \
+  --image registry.example.com/app-frontend:<PREVIOUS_SHA> \
+  app-frontend
 ```
 
-**WARNING:** If the migration involved destructive operations (DROP COLUMN, DROP
-TABLE), data may already be lost. In that case, you may need to restore from a
-database backup instead. See the "DB Migration Failure" scenario below.
+**Option C: Rollback via GitHub Actions**
 
-### 5. Disable Feature Flags (if applicable)
+1. Go to Actions tab in GitHub
+2. Select "CI/CD Pipeline" workflow
+3. Click "Run workflow"
+4. Select environment: `production`
+5. Enter the previous stable version SHA
 
-If the issue is isolated to a specific feature behind a flag:
-
-```bash
-# Disable the flag via your feature flag service CLI or admin UI
-curl -X PATCH https://flags.internal/api/flags/new-checkout \
-  -H "Authorization: Bearer ${FLAGS_API_TOKEN}" \
-  -d '{"enabled": false}'
-```
-
-This is the least disruptive rollback path and should be preferred when possible.
-
-### 6. Verify Health After Rollback
+### Step 4: Verify Rollback (3 minutes)
 
 ```bash
-# Run the health check script
-python scripts/health-check.py --url https://app.example.com
+# Run health checks
+python skills/deployment-pipeline/scripts/health-check.py \
+  --url https://api.example.com \
+  --retries 5 \
+  --output-dir ./rollback-results/
 
 # Run smoke tests
-./scripts/smoke-test.sh https://app.example.com
+./skills/deployment-pipeline/scripts/smoke-test.sh \
+  --url https://api.example.com \
+  --output-dir ./rollback-results/
 
-# Monitor error rates in your observability platform for 15 minutes
-# Check: HTTP 5xx rate, p99 latency, database connection pool usage
+# Verify correct version is running
+curl -s https://api.example.com/health | jq .version
 ```
 
-### 7. Announce Resolution
+### Step 5: Announce Resolution
 
-- Post in `#incidents`: "Rollback complete. Service restored to [version]. Monitoring for stability."
-- Update the status page if one was posted.
+```
+@channel ROLLBACK COMPLETE
+Environment: production
+Rolled back to: <previous-stable-sha>
+Status: All health checks passing
+Next steps: RCA will be conducted within 24 hours
+```
 
----
+## Database Rollback Considerations
 
-## Communication Protocol During Rollback
+**Important:** Database migrations are forward-only by default.
 
-| Time | Action |
-|------|--------|
-| T+0 min | IC announces incident in `#incidents` |
-| T+5 min | IC posts initial assessment and planned action |
-| T+15 min | IC posts status update (rollback in progress / complete) |
-| T+30 min | IC confirms stability or escalates |
-| T+60 min | IC posts final status update |
-| Next business day | Schedule post-mortem |
+### If the failed deployment included migrations:
 
----
+1. **Do NOT run `alembic downgrade` in production** unless the migration was specifically designed to be reversible
+2. Instead, create a new forward migration that undoes the changes
+3. If data was corrupted, restore from the most recent backup
 
-## Post-Rollback Investigation Checklist
+### Safe migration rollback pattern:
 
-After the service is stable, investigate the root cause:
+```bash
+# Step 1: Identify the migration that needs reversal
+alembic history --verbose
 
-- [ ] Capture logs from the failed deployment window
-- [ ] Identify the exact commit(s) that caused the issue
-- [ ] Check if the issue was caught by tests (if not, why not?)
-- [ ] Determine if monitoring/alerting detected the issue promptly
-- [ ] Write a post-mortem document with timeline, root cause, and action items
-- [ ] Create tickets for preventive measures (new tests, better alerts, etc.)
-- [ ] Share the post-mortem in the team meeting
+# Step 2: Create a reversal migration
+alembic revision --autogenerate -m "Revert: <original migration description>"
 
----
+# Step 3: Test the reversal migration
+./skills/deployment-pipeline/scripts/migration-dry-run.sh \
+  --db-url "$STAGING_DB_URL" \
+  --output-dir ./migration-rollback-test/
 
-## Common Rollback Scenarios
+# Step 4: Apply the reversal migration
+alembic upgrade head
+```
 
-### Scenario 1: Bad Deploy (Application Error)
+## Post-Rollback Actions
 
-**Symptoms:** Spike in 5xx errors, health check failures immediately after deploy.
-**Action:** Roll back the Docker image to the previous tag. No DB changes needed.
-**Recovery time:** 2-5 minutes.
+1. **Create incident ticket** with timeline, impact, and root cause hypothesis
+2. **Schedule post-mortem** within 24-48 hours
+3. **Document the rollback** in the deployment log
+4. **Investigate root cause** before re-attempting deployment
+5. **Add regression tests** for the failure scenario
 
-### Scenario 2: Database Migration Failure
+## Emergency Contacts
 
-**Symptoms:** Application errors referencing missing or changed columns/tables.
-**Action:**
-1. Roll back the application code first (it must work with the old schema).
-2. Run `alembic downgrade -1` to revert the migration.
-3. If the migration was destructive, restore from the last DB backup.
+| Role | Contact | When to Escalate |
+|------|---------|-----------------|
+| On-call engineer | PagerDuty rotation | First responder |
+| Incident commander | Engineering manager | SEV1/SEV2 incidents |
+| Database admin | DBA on-call | Data corruption or migration issues |
+| Platform team | #platform-team Slack | Infrastructure issues |
 
-**Recovery time:** 5-30 minutes (longer if backup restoration is needed).
+## Rollback Checklist
 
-### Scenario 3: Configuration Error
-
-**Symptoms:** Application starts but cannot connect to dependencies (DB, Redis,
-external APIs). Logs show connection refused or authentication errors.
-**Action:**
-1. Check environment variables and secrets for the deployment.
-2. Revert the configuration change (restore previous env vars / secrets).
-3. Restart the service.
-
-**Recovery time:** 2-10 minutes.
-
-### Scenario 4: Resource Exhaustion
-
-**Symptoms:** OOM kills, CPU throttling, disk full. Gradual degradation rather
-than immediate failure.
-**Action:**
-1. Scale up or roll back if a code change caused the resource increase.
-2. If caused by traffic spike, scale horizontally first, then investigate.
-
-**Recovery time:** 5-15 minutes.
+- [ ] Issue confirmed (health checks, error rates, user reports)
+- [ ] Previous stable version identified
+- [ ] Team notified in incident channel
+- [ ] Rollback executed
+- [ ] Health checks passing after rollback
+- [ ] Smoke tests passing after rollback
+- [ ] Resolution announced
+- [ ] Incident ticket created
+- [ ] Post-mortem scheduled

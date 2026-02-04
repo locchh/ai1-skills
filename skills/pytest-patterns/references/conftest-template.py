@@ -1,152 +1,158 @@
 """
-Production conftest.py Template
-================================
+conftest-template.py — Production-grade root conftest for FastAPI + SQLAlchemy async tests.
 
-This conftest provides shared fixtures for a FastAPI + SQLAlchemy async
-test suite.  It manages:
-  - A dedicated test database engine (session-scoped for speed)
-  - Per-test database sessions that roll back automatically
-  - An httpx.AsyncClient wired to the FastAPI app
-  - An authenticated client with a valid JWT
+Place this file at: tests/conftest.py
 
-Scope guidance:
-  session   -> expensive resources created once (engine, table DDL)
-  function  -> cheap resources that must be isolated per test (DB session)
+Provides:
+  - Async SQLAlchemy engine and session fixtures (SQLite in-memory for speed)
+  - httpx.AsyncClient fixture wired to the FastAPI app with DB override
+  - Authentication helper fixtures (standard user, admin user)
+  - Factory session wiring
+
+Dependencies:
+  pip install pytest pytest-asyncio httpx sqlalchemy[asyncio] aiosqlite factory-boy
 """
 
-from typing import AsyncGenerator
-from uuid import uuid4
-
 import pytest
-import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
     AsyncSession,
-    async_sessionmaker,
     create_async_engine,
+    async_sessionmaker,
 )
 
-# Application entry points
-from app.core.config import settings
-from app.core.security import create_access_token
-from app.db.base import Base
-from app.db.session import get_async_session
-from app.main import create_app
-
-# Factory registrations (see factory-template.py)
-from tests.factories import UserFactory, OrderFactory
+from app.main import app
+from app.database import Base, get_db
+from app.auth import create_access_token
 
 
-# ---------------------------------------------------------------------------
-# 1. pytest-asyncio configuration
-# ---------------------------------------------------------------------------
-# All async fixtures and tests use asyncio by default; no need for
-# @pytest.mark.asyncio on every test.
-pytest_plugins = []
+# ─── Engine & Session ────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="session")
+def anyio_backend():
+    """Select asyncio as the async backend for the entire test session."""
+    return "asyncio"
 
 
-# ---------------------------------------------------------------------------
-# 2. Database engine (session scope)
-# ---------------------------------------------------------------------------
-# Created once per test session.  Using a dedicated test database avoids
-# interference with development data.
-@pytest_asyncio.fixture(scope="session")
-async def db_engine() -> AsyncGenerator[AsyncEngine, None]:
-    """Create an async engine pointed at the test database."""
+@pytest.fixture(scope="session")
+async def engine():
+    """Create an async engine and initialize all tables once per session."""
     engine = create_async_engine(
-        settings.TEST_DATABASE_URL,
+        "sqlite+aiosqlite:///:memory:",
         echo=False,
-        pool_pre_ping=True,
     )
-
-    # Create all tables before the first test
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
     yield engine
-
-    # Tear down all tables after the last test
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
     await engine.dispose()
 
 
-# ---------------------------------------------------------------------------
-# 3. Async session (function scope, transaction rollback)
-# ---------------------------------------------------------------------------
-# Each test gets its own session wrapped in a transaction that is always
-# rolled back, keeping the database clean without expensive truncation.
-@pytest_asyncio.fixture
-async def db_session(
-    db_engine: AsyncEngine,
-) -> AsyncGenerator[AsyncSession, None]:
-    """Provide a transactional database session that rolls back after each test."""
-    connection = await db_engine.connect()
-    transaction = await connection.begin()
+@pytest.fixture
+async def db_session(engine):
+    """
+    Provide a transactional database session that rolls back after each test.
 
-    session_factory = async_sessionmaker(
-        bind=connection,
-        class_=AsyncSession,
-        expire_on_commit=False,
+    This ensures complete test isolation -- each test starts with a clean state.
+    """
+    async_session = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
     )
-    session = session_factory()
-
-    yield session
-
-    await session.close()
-    await transaction.rollback()
-    await connection.close()
+    async with async_session() as session:
+        async with session.begin():
+            yield session
+            # Rollback any changes made during the test
+            await session.rollback()
 
 
-# ---------------------------------------------------------------------------
-# 4. httpx.AsyncClient (function scope)
-# ---------------------------------------------------------------------------
-# Uses ASGI transport so no real HTTP server is started — tests are fast.
-@pytest_asyncio.fixture
-async def client(
-    db_session: AsyncSession,
-) -> AsyncGenerator[AsyncClient, None]:
-    """Provide an async test client with the DB session overridden."""
-    app = create_app()
+# ─── HTTP Client ─────────────────────────────────────────────────────────────────
 
-    # Override the DB dependency so all requests use the test session
-    app.dependency_overrides[get_async_session] = lambda: db_session
+@pytest.fixture
+async def client(db_session: AsyncSession):
+    """
+    Async HTTP client pointing at the FastAPI app.
 
+    The app's database dependency is overridden to use the test session,
+    so all requests share the same transactional session (and its rollback).
+    """
+    async def _override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
-
     app.dependency_overrides.clear()
 
 
-# ---------------------------------------------------------------------------
-# 5. Authenticated client (function scope)
-# ---------------------------------------------------------------------------
-@pytest_asyncio.fixture
-async def auth_client(
-    client: AsyncClient,
-    db_session: AsyncSession,
-) -> AsyncClient:
-    """Return a client whose requests carry a valid Authorization header."""
-    # Create a real user in the test database via factory
-    user = UserFactory.build()
-    db_session.add(user)
-    await db_session.flush()
+# ─── Authentication Helpers ──────────────────────────────────────────────────────
 
-    token = create_access_token(subject=str(user.id))
-    client.headers["Authorization"] = f"Bearer {token}"
+def _make_auth_headers(user_id: int, role: str = "member") -> dict[str, str]:
+    """Create Authorization headers with a JWT for the given user."""
+    token = create_access_token(data={"sub": str(user_id), "role": role})
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def auth_headers() -> dict[str, str]:
+    """Authorization headers for a standard test user (id=1, role=member)."""
+    return _make_auth_headers(user_id=1, role="member")
+
+
+@pytest.fixture
+def admin_headers() -> dict[str, str]:
+    """Authorization headers for an admin user (id=99, role=admin)."""
+    return _make_auth_headers(user_id=99, role="admin")
+
+
+@pytest.fixture
+async def authenticated_client(client: AsyncClient, auth_headers: dict) -> AsyncClient:
+    """AsyncClient pre-configured with standard user auth headers."""
+    client.headers.update(auth_headers)
     return client
 
 
-# ---------------------------------------------------------------------------
-# 6. Factory session binding
-# ---------------------------------------------------------------------------
-# Wire factory_boy factories to the current test session so that
-# Factory.create() persists objects through the same transactional session.
+@pytest.fixture
+async def admin_client(client: AsyncClient, admin_headers: dict) -> AsyncClient:
+    """AsyncClient pre-configured with admin auth headers."""
+    client.headers.update(admin_headers)
+    return client
+
+
+# ─── Factory Session Wiring ──────────────────────────────────────────────────────
+
 @pytest.fixture(autouse=True)
-def _bind_factories(db_session: AsyncSession) -> None:
-    """Bind all registered factories to the current test DB session."""
-    for factory_cls in (UserFactory, OrderFactory):
-        factory_cls._meta.sqlalchemy_session = db_session  # type: ignore[attr-defined]
+def _wire_factories(db_session: AsyncSession):
+    """
+    Automatically set the DB session on all SQLAlchemy-backed factories.
+
+    Import your factories here so they use the per-test transactional session.
+    """
+    from tests.factories.user_factory import UserFactory
+    from tests.factories.order_factory import OrderFactory
+
+    UserFactory._meta.sqlalchemy_session = db_session
+    OrderFactory._meta.sqlalchemy_session = db_session
+
+
+# ─── Sample Data Fixtures ────────────────────────────────────────────────────────
+
+@pytest.fixture
+async def sample_user(db_session: AsyncSession):
+    """Create and persist a standard user for tests that need an existing user."""
+    from tests.factories.user_factory import UserFactory
+
+    user = UserFactory()
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+@pytest.fixture
+async def sample_order(db_session: AsyncSession, sample_user):
+    """Create and persist an order linked to the sample_user."""
+    from tests.factories.order_factory import OrderFactory
+
+    order = OrderFactory(user_id=sample_user.id)
+    db_session.add(order)
+    await db_session.flush()
+    return order

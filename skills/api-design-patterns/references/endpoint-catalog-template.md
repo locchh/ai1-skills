@@ -1,196 +1,177 @@
-# API Endpoint Catalog: [Service Name]
+# Endpoint Catalog Template
 
-## Base URL
+Use this template to document all API endpoints for a feature or module. This serves as the contract between frontend and backend teams.
 
-`/v1/[resource]`
+---
 
-## Authentication
+## Module: [Module Name]
 
-| Endpoint | Auth Required | Roles |
-|----------|:------------:|-------|
-| GET /resources | Yes/No | [roles] |
-| POST /resources | Yes | [roles] |
+**Base URL:** `/v1/{resource}`
+**Auth Required:** Yes / No
+**Tags:** [OpenAPI tags]
 
-## Endpoints
+---
 
-### GET /v1/[resources]
+### Endpoints
 
-**Summary:** List [resources] with pagination and filtering
+#### `GET /v1/{resource}`
+
+**Summary:** List {resources} with pagination and filtering.
 
 **Query Parameters:**
 
 | Parameter | Type | Required | Default | Description |
-|-----------|------|:--------:|---------|-------------|
-| cursor | string | No | null | Pagination cursor |
-| limit | integer | No | 20 | Page size (max: 100) |
-| sort | string | No | created_at | Sort field |
-| order | string | No | desc | Sort order (asc/desc) |
-| q | string | No | null | Search query |
-| status | string | No | null | Filter by status |
+|-----------|------|----------|---------|-------------|
+| `cursor` | `string` | No | `null` | Pagination cursor from previous response |
+| `limit` | `integer` | No | `20` | Items per page (1-100) |
+| `sort` | `string` | No | `-created_at` | Sort field with direction prefix |
+| `q` | `string` | No | `null` | Full-text search query |
 
-**Response (200):**
+**Response:** `200 OK`
 ```json
 {
   "items": [
     {
-      "id": "uuid",
-      "field1": "value",
-      "field2": "value",
-      "created_at": "2024-01-01T00:00:00Z",
-      "updated_at": "2024-01-01T00:00:00Z"
+      "id": 1,
+      "field": "value",
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-01-15T10:30:00Z"
     }
   ],
-  "next_cursor": "eyJpZCI6IDQyfQ==",
+  "next_cursor": "eyJpZCI6MjB9",
   "has_more": true
 }
 ```
 
 **Errors:**
-| Status | Code | Description |
-|--------|------|-------------|
-| 401 | UNAUTHORIZED | Missing or invalid auth token |
-| 422 | VALIDATION_ERROR | Invalid query parameters |
+| Status | Code | When |
+|--------|------|------|
+| `401` | `UNAUTHORIZED` | Missing or invalid auth token |
 
 ---
 
-### POST /v1/[resources]
+#### `POST /v1/{resource}`
 
-**Summary:** Create a new [resource]
+**Summary:** Create a new {resource}.
 
-**Request Body:**
+**Request Body:** `{Resource}Create`
 ```json
 {
   "field1": "value",
-  "field2": "value"
+  "field2": 42
 }
 ```
 
-**Response (201):**
+**Response:** `201 Created`
 ```json
 {
-  "id": "uuid",
+  "id": 1,
   "field1": "value",
-  "field2": "value",
-  "created_at": "2024-01-01T00:00:00Z",
-  "updated_at": "2024-01-01T00:00:00Z"
+  "field2": 42,
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+**Response Headers:**
+- `Location: /v1/{resource}/1`
 
 **Errors:**
-| Status | Code | Description |
-|--------|------|-------------|
-| 400 | VALIDATION_ERROR | Invalid request body |
-| 401 | UNAUTHORIZED | Missing auth |
-| 409 | DUPLICATE | Resource already exists |
+| Status | Code | When |
+|--------|------|------|
+| `401` | `UNAUTHORIZED` | Missing or invalid auth token |
+| `409` | `CONFLICT` | Resource with same unique field exists |
+| `422` | `VALIDATION_ERROR` | Request body fails validation |
 
 ---
 
-### GET /v1/[resources]/{id}
+#### `GET /v1/{resource}/{id}`
 
-**Summary:** Get a [resource] by ID
+**Summary:** Get a single {resource} by ID.
 
 **Path Parameters:**
-
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| id | uuid | Resource ID |
+| `id` | `integer` | Resource identifier |
 
-**Response (200):**
+**Response:** `200 OK`
 ```json
 {
-  "id": "uuid",
+  "id": 1,
   "field1": "value",
-  "field2": "value",
-  "created_at": "2024-01-01T00:00:00Z",
-  "updated_at": "2024-01-01T00:00:00Z"
+  "field2": 42,
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
 }
 ```
 
 **Errors:**
-| Status | Code | Description |
-|--------|------|-------------|
-| 401 | UNAUTHORIZED | Missing auth |
-| 404 | NOT_FOUND | Resource not found |
+| Status | Code | When |
+|--------|------|------|
+| `401` | `UNAUTHORIZED` | Missing or invalid auth token |
+| `404` | `NOT_FOUND` | Resource does not exist |
 
 ---
 
-### PATCH /v1/[resources]/{id}
+#### `PATCH /v1/{resource}/{id}`
 
-**Summary:** Partially update a [resource]
+**Summary:** Partially update a {resource}.
 
-**Request Body (all fields optional):**
+**Request Body:** `{Resource}Patch` (all fields optional)
 ```json
 {
   "field1": "new value"
 }
 ```
 
-**Response (200):** Full updated resource (same as GET response)
+**Response:** `200 OK` — Returns the full updated resource.
 
 **Errors:**
-| Status | Code | Description |
-|--------|------|-------------|
-| 400 | VALIDATION_ERROR | Invalid field values |
-| 401 | UNAUTHORIZED | Missing auth |
-| 403 | FORBIDDEN | Not resource owner |
-| 404 | NOT_FOUND | Resource not found |
+| Status | Code | When |
+|--------|------|------|
+| `401` | `UNAUTHORIZED` | Missing or invalid auth token |
+| `404` | `NOT_FOUND` | Resource does not exist |
+| `409` | `CONFLICT` | Update conflicts with another resource |
+| `422` | `VALIDATION_ERROR` | Request body fails validation |
 
 ---
 
-### DELETE /v1/[resources]/{id}
+#### `DELETE /v1/{resource}/{id}`
 
-**Summary:** Delete a [resource]
+**Summary:** Delete a {resource}.
 
-**Response (204):** No body
+**Response:** `204 No Content` — Empty body.
 
 **Errors:**
-| Status | Code | Description |
-|--------|------|-------------|
-| 401 | UNAUTHORIZED | Missing auth |
-| 403 | FORBIDDEN | Not resource owner |
-| 404 | NOT_FOUND | Resource not found |
+| Status | Code | When |
+|--------|------|------|
+| `401` | `UNAUTHORIZED` | Missing or invalid auth token |
+| `404` | `NOT_FOUND` | Resource does not exist |
 
 ---
 
-## Schemas
+## Auth Requirements
 
-### [Resource]Create
-```
-field1: string (required)
-field2: string (required)
-```
+| Endpoint | Auth | Roles |
+|----------|------|-------|
+| `GET /v1/{resource}` | Required | Any authenticated user |
+| `POST /v1/{resource}` | Required | Admin, Editor |
+| `GET /v1/{resource}/{id}` | Required | Any authenticated user |
+| `PATCH /v1/{resource}/{id}` | Required | Admin, Owner |
+| `DELETE /v1/{resource}/{id}` | Required | Admin only |
 
-### [Resource]Update
-```
-field1: string (optional)
-field2: string (optional)
-```
+---
 
-### [Resource]Response
-```
-id: uuid
-field1: string
-field2: string
-created_at: datetime
-updated_at: datetime
-```
+## Rate Limits
 
-### [Resource]ListResponse
-```
-items: [Resource]Response[]
-next_cursor: string | null
-has_more: boolean
-```
+| Endpoint | Limit | Window |
+|----------|-------|--------|
+| `GET /v1/{resource}` | 100 | per minute |
+| `POST /v1/{resource}` | 20 | per minute |
+| `PATCH /v1/{resource}/{id}` | 30 | per minute |
+| `DELETE /v1/{resource}/{id}` | 10 | per minute |
 
-### ErrorResponse
-```
-detail: string
-code: string
-field_errors: FieldError[] (optional)
-```
-
-### FieldError
-```
-field: string
-message: string
-```
+Rate limit headers included in every response:
+- `X-RateLimit-Limit`: Maximum requests allowed
+- `X-RateLimit-Remaining`: Requests remaining in window
+- `X-RateLimit-Reset`: Unix timestamp when the window resets

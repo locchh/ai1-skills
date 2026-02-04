@@ -2,321 +2,456 @@
 name: code-review-security
 description: >-
   Security-focused code review checklist and automated scanning patterns. Use when
-  reviewing pull requests for security issues, auditing authentication/authorization code,
-  checking for OWASP Top 10 vulnerabilities, or validating input sanitization. Covers
-  SQL injection prevention, XSS protection, CSRF tokens, authentication flow review,
-  secrets detection, dependency vulnerability scanning, and secure coding patterns for
-  Python (FastAPI) and React. Does NOT cover deployment security (use docker-best-practices)
-  or incident handling (use incident-response).
+  reviewing pull requests for security issues, auditing authentication/authorization
+  code, checking for OWASP Top 10 vulnerabilities, or validating input sanitization.
+  Covers SQL injection prevention, XSS protection, CSRF tokens, authentication flow
+  review, secrets detection, dependency vulnerability scanning, and secure coding
+  patterns for Python (FastAPI) and React. Does NOT cover deployment security (use
+  docker-best-practices) or incident handling (use incident-response).
 license: MIT
-compatibility: 'Python 3.12+, FastAPI 0.115+, React 18+, bandit, safety, eslint-plugin-security'
+compatibility: 'Python 3.12+, FastAPI, React, TypeScript'
 metadata:
-  author: platform-team
+  author: security-team
   version: '1.0.0'
   sdlc-phase: code-review
-allowed-tools: Read Grep Glob Bash(bandit:*) Bash(safety:*) Bash(npm:audit)
+allowed-tools: Read Grep Glob Bash(python:*) Bash(npm:*)
 context: fork
 ---
 
 # Code Review Security
 
-Security-focused code review skill for Python (FastAPI) and React applications. Provides
-a systematic checklist based on the OWASP Top 10 (2021), language-specific vulnerability
-patterns, automated scanning integration, and structured reporting. Every finding includes
-severity, evidence, and a concrete fix recommendation.
-
-See `scripts/security-scan.py` for automated scanning.
-
 ## When to Use
 
-Use this skill when:
+Activate this skill when:
+- Reviewing pull requests for security vulnerabilities
+- Auditing authentication or authorization code changes
+- Reviewing code that handles user input, file uploads, or external data
+- Checking for OWASP Top 10 vulnerabilities in new features
+- Validating that secrets are not committed to the repository
+- Scanning dependencies for known vulnerabilities
+- Reviewing API endpoints that expose sensitive data
 
-- **Reviewing a pull request** that touches authentication, authorization, user input handling, database queries, or external API integrations
-- **Auditing authentication and authorization code** for correctness and completeness
-- **Checking for OWASP Top 10 vulnerabilities** during scheduled security reviews or pre-release audits
-- **Validating input sanitization** on new API endpoints or form handlers
-- **Scanning for hardcoded secrets** before code reaches the main branch
-- **Evaluating dependency security** for newly added or updated packages
-
-Do **NOT** use this skill for:
-
-- Container or infrastructure security hardening -- use `docker-best-practices` instead
-- Production incident investigation or response -- use `incident-response` instead
-- General code quality checks (linting, formatting, tests) -- use `pre-merge-checklist` instead
-- Writing security tests -- use `pytest-patterns` or `e2e-testing` instead
+Do NOT use this skill for:
+- Deployment infrastructure security (use `docker-best-practices`)
+- Incident response procedures (use `incident-response`)
+- General code quality review without security focus (use `pre-merge-checklist`)
+- Writing implementation code (use `python-backend-expert` or `react-frontend-expert`)
 
 ## Instructions
 
 ### OWASP Top 10 Checklist
 
-Walk through each applicable OWASP Top 10 (2021) category for every security review. See `references/owasp-checklist.md` for the quick-reference version.
+Review every PR against the OWASP Top 10 (2021 edition). Each category below includes specific checks for Python/FastAPI and React codebases.
+
+---
 
 #### A01: Broken Access Control
 
-**Python / FastAPI checks:**
+**What to look for:**
+- Missing authorization checks on endpoints
+- Direct object reference without ownership verification
+- Endpoints that expose data without role-based filtering
+- Missing `Depends()` for auth on new routes
 
-- Every endpoint serving user-specific data has `Depends(get_current_user)` or equivalent authentication dependency.
-- Resource ownership is validated: the authenticated user owns the requested resource, or has an admin role.
-- IDOR (Insecure Direct Object Reference) is prevented by filtering queries with `current_user.id`, not trusting client-supplied IDs alone.
-- Path traversal is blocked: any user-supplied filename is resolved with `Path.resolve()` and checked with `is_relative_to()`.
-
+**Python/FastAPI checks:**
 ```python
-# VULNERABLE: No ownership check (IDOR)
-@router.get("/orders/{order_id}")
-async def get_order(order_id: int, db: Session = Depends(get_db)):
-    return db.query(Order).get(order_id)
+# BAD: No authorization check -- any authenticated user can access any user
+@router.get("/users/{user_id}")
+async def get_user(user_id: int, db: Session = Depends(get_db)):
+    return await user_repo.get(user_id)
 
-# SECURE: Ownership verified
-@router.get("/orders/{order_id}")
-async def get_order(
-    order_id: int,
+# GOOD: Verify the requesting user owns the resource or is admin
+@router.get("/users/{user_id}")
+async def get_user(
+    user_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    order = db.query(Order).filter(Order.id == order_id, Order.user_id == current_user.id).first()
-    if not order:
-        raise HTTPException(status_code=404)
-    return order
+    if current_user.id != user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return await user_repo.get(user_id)
 ```
 
-**React checks:** Protected routes must use an auth guard component. Client-side role checks must be backed by server-side enforcement. Admin panels must derive roles from the auth context, never from URL parameters or local storage.
+**Review checklist:**
+- [ ] Every route has authentication (`Depends(get_current_user)`)
+- [ ] Resource access is verified against the requesting user
+- [ ] Admin-only endpoints check `role == "admin"`
+- [ ] List endpoints filter by user ownership (unless admin)
+- [ ] No IDOR (Insecure Direct Object Reference) vulnerabilities
+
+---
 
 #### A02: Cryptographic Failures
 
-- Passwords hashed with bcrypt (cost >= 12), scrypt, or Argon2. Never MD5, SHA-1, or plain SHA-256.
-- Tokens and nonces use `secrets.token_urlsafe()`, not `random`.
-- No hardcoded secrets -- all credentials from environment variables or a secrets manager.
-- All external communications use HTTPS. Flag any `http://` URL in production config.
+**What to look for:**
+- Passwords stored in plaintext or with weak hashing
+- Sensitive data in logs or error messages
+- Hardcoded secrets, API keys, or tokens
+- Weak JWT configuration
 
-#### A03: Injection
-
-Covered in detail under SQL Injection Prevention and XSS Prevention sections below. Additional vectors: command injection (`shell=True`), template injection, `eval()`/`exec()`.
-
-#### A04: Insecure Design
-
-- Rate limiting on authentication, password reset, and resource-creation endpoints.
-- Business logic limits: max file upload size, max records per request, cooldowns on sensitive actions.
-
-#### A05: Security Misconfiguration
-
-- `DEBUG=True` never set in production. CORS restricted to specific origins (no wildcard with credentials). Default/placeholder secrets flagged. Security headers present (HSTS, CSP, X-Content-Type-Options, X-Frame-Options).
-
-#### A06: Vulnerable Components
-
-- Run `safety check` (Python) and `npm audit` (JavaScript) on every review. Flag HIGH/CRITICAL CVEs.
-- Dependencies pinned with lockfiles. Unmaintained or outdated dependencies flagged.
-
-#### A07-A10: Authentication, Integrity, Logging, SSRF
-
-- **A07**: See Authentication Review section. **A08**: CSRF protection for cookie-based auth; safe deserialization only. **A09**: No secrets in logs; auth events logged with user ID and IP. **A10**: User-supplied URLs validated against domain allowlist; internal IPs blocked.
-
-### SQL Injection Prevention
-
-**Safe patterns (always use these):**
-
+**Python checks:**
 ```python
-# SQLAlchemy ORM (automatically parameterized)
-user = db.query(User).filter(User.email == email).first()
+# BAD: Weak password hashing
+import hashlib
+password_hash = hashlib.md5(password.encode()).hexdigest()
 
-# SQLAlchemy text() with bind parameters
-result = db.execute(text("SELECT * FROM users WHERE email = :email"), {"email": email})
+# GOOD: Use bcrypt via passlib
+from passlib.context import CryptContext
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+password_hash = pwd_context.hash(password)
 
-# SQLAlchemy Core expressions
-stmt = select(User).where(User.email == email)
-```
+# BAD: Secret in code
+SECRET_KEY = "my-super-secret-key-123"
 
-**Dangerous patterns (flag immediately):**
-
-```python
-# CRITICAL: f-string, .format(), concatenation, or % formatting in SQL
-db.execute(text(f"SELECT * FROM users WHERE email = '{email}'"))
-db.execute(text("SELECT * FROM users WHERE email = '{}'".format(email)))
-```
-
-### XSS Prevention
-
-React auto-escapes string values in JSX by default. The primary risks are bypassing this escaping:
-
-```tsx
-// HIGH: dangerouslySetInnerHTML without sanitization
-<div dangerouslySetInnerHTML={{ __html: userContent }} />
-
-// SECURE: Sanitize first
-import DOMPurify from 'dompurify';
-<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(userContent) }} />
-
-// SECURE: Let React auto-escape (preferred)
-<div>{userContent}</div>
-```
-
-Flag `javascript:` URL schemes and validate all user-provided URLs with a scheme check. Verify Content Security Policy headers are configured -- flag `'unsafe-eval'` in `script-src`.
-
-### Authentication Review
-
-**JWT validation:**
-
-```python
-# VULNERABLE: No expiration, no algorithm restriction on decode
-payload = {"sub": user_id}
-token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-data = jwt.decode(token, SECRET_KEY)
-
-# SECURE: Expiration, issued-at, unique ID, algorithm pinned
-payload = {
-    "sub": str(user_id),
-    "exp": datetime.utcnow() + timedelta(minutes=30),
-    "iat": datetime.utcnow(),
-    "jti": str(uuid4()),
-}
-token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-```
-
-**Session management:** Rotate session IDs after login. Expire sessions after idle timeout. Invalidate server-side on logout. Set `HttpOnly`, `Secure`, `SameSite` on session cookies.
-
-**Password hashing:** Use bcrypt with cost factor >= 12. Never `hashlib.sha256()` for passwords.
-
-### Authorization Review
-
-**RBAC pattern:**
-
-```python
-def require_role(required_role: str):
-    def dependency(current_user: User = Depends(get_current_user)):
-        if current_user.role != required_role and current_user.role != "admin":
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        return current_user
-    return dependency
-```
-
-**IDOR prevention checklist:** All queries for user-owned resources filter by `current_user.id`. Return 404 (not 403) when resource does not belong to user. Bulk operations filtered to authenticated user's scope.
-
-### Input Validation
-
-**Pydantic validation (FastAPI):**
-
-```python
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-    display_name: str = Field(min_length=1, max_length=100, pattern=r'^[\w\s\-]+$')
-    bio: str = Field(default="", max_length=500)
-```
-
-**File upload security:** Extension allowlist, size limit, MIME validation with `python-magic`, UUID-based storage filename. Never use user-supplied filename for storage.
-
-**Rate limiting:** Apply `slowapi` or equivalent to login (`5/minute`), password reset (`3/hour`), and search endpoints.
-
-### Secrets Management
-
-```python
-# CRITICAL: Hardcoded secret
-SECRET_KEY = "my-super-secret-key-2024"
-
-# SECURE: Environment variables or Pydantic settings
+# GOOD: Secret from environment
 SECRET_KEY = os.environ["SECRET_KEY"]
 ```
 
-Grep patterns: `grep -rn 'SECRET.*=.*"' --include="*.py" | grep -v 'os.environ\|os.getenv\|settings\.'`
+**Review checklist:**
+- [ ] Passwords hashed with bcrypt (never MD5, SHA1, or plaintext)
+- [ ] JWT secret loaded from environment, not hardcoded
+- [ ] Sensitive data excluded from logs (passwords, tokens, PII)
+- [ ] HTTPS enforced for all external communication
+- [ ] No secrets in source code (check `.env.example` has placeholders only)
 
-Verify `.env` is in `.gitignore`. Run `git ls-files .env` to confirm it is not tracked.
+---
 
-### Dependency Scanning
+#### A03: Injection
 
-```bash
-# Python
-safety check --full-report
-pip-audit --strict --desc
+**What to look for:**
+- Raw SQL queries with string interpolation
+- `eval()`, `exec()`, `compile()` with user input
+- `subprocess` calls with `shell=True`
+- Template injection
 
-# JavaScript
-npm audit --audit-level=high
+**Python checks:**
+```python
+# BAD: SQL injection via string formatting
+query = f"SELECT * FROM users WHERE email = '{email}'"
+db.execute(text(query))
+
+# GOOD: Parameterized query
+db.execute(text("SELECT * FROM users WHERE email = :email"), {"email": email})
+
+# GOOD: SQLAlchemy ORM (always parameterized)
+user = db.query(User).filter(User.email == email).first()
+
+# BAD: Command injection
+subprocess.run(f"convert {filename}", shell=True)
+
+# GOOD: Pass arguments as a list
+subprocess.run(["convert", filename], shell=False)
+
+# BAD: Code execution with user input
+result = eval(user_input)
+
+# GOOD: Never eval user input. Use ast.literal_eval for safe parsing.
+result = ast.literal_eval(user_input)  # Only for literal structures
 ```
 
-**Decision framework:** Critical + exploitable = block merge. Critical + not exploitable = fix within 48h. High + exploitable = block merge. Medium/Low = track in backlog.
+**Review checklist:**
+- [ ] No raw SQL with string interpolation (use ORM or parameterized queries)
+- [ ] No `eval()`, `exec()`, or `compile()` with external input
+- [ ] No `subprocess.run(..., shell=True)` with dynamic arguments
+- [ ] No `pickle.loads()` on untrusted data
+- [ ] All user input validated by Pydantic schemas before use
+
+---
+
+#### A04: Insecure Design
+
+**What to look for:**
+- Missing rate limiting on authentication endpoints
+- No account lockout after failed login attempts
+- Missing CAPTCHA on public-facing forms
+- Business logic flaws (e.g., negative amounts, self-privilege-escalation)
+
+**Review checklist:**
+- [ ] Rate limiting on login, registration, and password reset
+- [ ] Account lockout or exponential backoff after 5+ failed attempts
+- [ ] Business logic validates constraints (positive amounts, valid transitions)
+- [ ] Sensitive operations require re-authentication
+
+---
+
+#### A05: Security Misconfiguration
+
+**What to look for:**
+- Debug mode enabled in production
+- CORS configured with wildcard `*` origins
+- Default credentials or admin accounts
+- Verbose error messages exposing stack traces
+
+**Python/FastAPI checks:**
+```python
+# BAD: Wide-open CORS
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
+
+# GOOD: Explicit allowed origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://app.example.com"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+# BAD: Debug mode in production
+app = FastAPI(debug=True)
+
+# GOOD: Debug only in development
+app = FastAPI(debug=settings.DEBUG)  # DEBUG=False in production
+```
+
+**Review checklist:**
+- [ ] CORS origins are explicit (no wildcard in production)
+- [ ] Debug mode disabled in production configuration
+- [ ] Error responses do not expose stack traces or internal details
+- [ ] Default admin credentials are changed or removed
+- [ ] Security headers set (X-Content-Type-Options, X-Frame-Options, etc.)
+
+---
+
+#### A06: Vulnerable and Outdated Components
+
+**Review checklist:**
+- [ ] No known CVEs in Python dependencies (`pip-audit` or `safety check`)
+- [ ] No known CVEs in npm dependencies (`npm audit`)
+- [ ] Dependencies pinned to specific versions in lock files
+- [ ] No deprecated packages still in use
+
+---
+
+#### A07: Identification and Authentication Failures
+
+**What to look for:**
+- Weak password policies
+- Session tokens that do not expire
+- Missing multi-factor authentication for admin actions
+- JWT tokens without expiration
+
+**Python checks:**
+```python
+# BAD: JWT without expiration
+token = jwt.encode({"sub": user_id}, SECRET_KEY, algorithm="HS256")
+
+# GOOD: JWT with expiration
+token = jwt.encode(
+    {"sub": user_id, "exp": datetime.utcnow() + timedelta(minutes=30)},
+    SECRET_KEY,
+    algorithm="HS256",
+)
+```
+
+**Review checklist:**
+- [ ] JWT tokens have expiration (`exp` claim)
+- [ ] Refresh tokens are stored securely and can be revoked
+- [ ] Password policy enforces minimum length (12+) and complexity
+- [ ] Session invalidation on password change or logout
+- [ ] No user enumeration via login error messages
+
+---
+
+#### A08: Software and Data Integrity Failures
+
+**Review checklist:**
+- [ ] CI/CD pipeline validates artifact integrity
+- [ ] No unsigned or unverified packages
+- [ ] Deserialization of untrusted data uses safe methods (no `pickle.loads`)
+- [ ] Database migrations are reviewed before execution
+
+---
+
+#### A09: Security Logging and Monitoring Failures
+
+**Review checklist:**
+- [ ] Authentication events are logged (login, logout, failed attempts)
+- [ ] Authorization failures are logged with context
+- [ ] Sensitive data is NOT included in logs (passwords, tokens, PII)
+- [ ] Log entries include timestamp, user ID, IP address, action
+- [ ] Alerting configured for suspicious patterns (brute force, unusual access)
+
+---
+
+#### A10: Server-Side Request Forgery (SSRF)
+
+**What to look for:**
+- User-supplied URLs used in server-side requests
+- Redirect endpoints that accept arbitrary URLs
+
+**Python checks:**
+```python
+# BAD: Fetch arbitrary URL from user input
+url = request.query_params["url"]
+response = httpx.get(url)  # SSRF: can access internal services
+
+# GOOD: Validate URL against allowlist
+ALLOWED_HOSTS = {"api.example.com", "cdn.example.com"}
+parsed = urlparse(url)
+if parsed.hostname not in ALLOWED_HOSTS:
+    raise HTTPException(400, "URL not allowed")
+response = httpx.get(url)
+```
+
+**Review checklist:**
+- [ ] No server-side requests to user-controlled URLs without validation
+- [ ] URL allowlists used for external integrations
+- [ ] Internal service URLs not exposed in error messages
+
+---
+
+### Python-Specific Security Checks
+
+Beyond OWASP, review Python code for these patterns:
+
+| Pattern | Risk | Fix |
+|---------|------|-----|
+| `eval(user_input)` | Remote code execution | Remove or use `ast.literal_eval` |
+| `pickle.loads(data)` | Arbitrary code execution | Use JSON or `msgpack` |
+| `subprocess.run(cmd, shell=True)` | Command injection | Pass args as list, `shell=False` |
+| `yaml.load(data)` | Code execution | Use `yaml.safe_load(data)` |
+| `os.system(cmd)` | Command injection | Use `subprocess.run([...])` |
+| Raw SQL strings | SQL injection | Use ORM or parameterized queries |
+| `hashlib.md5(password)` | Weak hashing | Use `bcrypt` via `passlib` |
+| `jwt.decode(token, options={"verify_signature": False})` | Auth bypass | Always verify signature |
+| `open(user_path)` | Path traversal | Validate path, use `pathlib.resolve()` |
+| `tempfile.mktemp()` | Race condition | Use `tempfile.mkstemp()` |
+
+### React-Specific Security Checks
+
+| Pattern | Risk | Fix |
+|---------|------|-----|
+| `dangerouslySetInnerHTML` | XSS | Use text content or sanitize with DOMPurify |
+| `javascript:` in href | XSS | Validate URLs, allow only `https:` |
+| `window.location = userInput` | Open redirect | Validate against allowlist |
+| Storing tokens in localStorage | Token theft via XSS | Use httpOnly cookies |
+| Inline event handlers from data | XSS | Use React event handlers |
+| `eval()` or `Function()` | Code execution | Remove entirely |
+| Rendering user HTML | XSS | Use a sanitization library |
+
+**React code review:**
+```tsx
+// BAD: XSS via dangerouslySetInnerHTML
+<div dangerouslySetInnerHTML={{ __html: userBio }} />
+
+// GOOD: Sanitize first, or use text content
+import DOMPurify from "dompurify";
+<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(userBio) }} />
+
+// BETTER: Use text content when HTML is not needed
+<p>{userBio}</p>
+
+// BAD: javascript: URL
+<a href={userLink}>Click</a>  // userLink could be "javascript:alert(1)"
+
+// GOOD: Validate protocol
+const safeHref = /^https?:\/\//.test(userLink) ? userLink : "#";
+<a href={safeHref}>Click</a>
+```
+
+### Severity Classification
+
+Classify each finding by severity for prioritization:
+
+| Severity | Description | Examples | SLA |
+|----------|-------------|----------|-----|
+| **Critical** | Exploitable remotely, no auth needed, data breach | SQL injection, RCE, auth bypass | Block merge, fix immediately |
+| **High** | Exploitable with auth, privilege escalation | IDOR, broken access control, XSS (stored) | Block merge, fix before release |
+| **Medium** | Requires specific conditions to exploit | CSRF, XSS (reflected), open redirect | Fix within sprint |
+| **Low** | Defense-in-depth, informational | Missing headers, verbose errors | Fix when convenient |
+| **Info** | Best practice recommendations | Dependency updates, code style | Track in backlog |
+
+### Finding Report Format
+
+When reporting security findings, use this format for consistency:
+
+```markdown
+## Security Finding: [Title]
+
+**Severity:** Critical | High | Medium | Low | Info
+**Category:** OWASP A01-A10 or custom category
+**File:** path/to/file.py:42
+**CWE:** CWE-89 (if applicable)
+
+### Description
+Brief description of the vulnerability and its impact.
+
+### Vulnerable Code
+```python
+# The problematic code
+vulnerable_function(user_input)
+```
+
+### Recommended Fix
+```python
+# The secure alternative
+safe_function(sanitize(user_input))
+```
+
+### Impact
+What an attacker could achieve by exploiting this vulnerability.
+
+### References
+- Link to relevant OWASP page
+- Link to relevant CWE entry
+```
+
+### Automated Scanning
+
+Use `scripts/security-scan.py` to perform AST-based scanning for common vulnerability patterns in Python code. The script scans for:
+- `eval()` / `exec()` / `compile()` calls
+- `subprocess` with `shell=True`
+- `pickle.loads()` on potentially untrusted data
+- Raw SQL string construction
+- `yaml.load()` without `Loader=SafeLoader`
+- Hardcoded secret patterns (API keys, passwords)
+- Weak hash functions (MD5, SHA1 for passwords)
+
+Run: `python scripts/security-scan.py --path ./app --output-dir ./security-results`
+
+**Dependency scanning (run separately):**
+```bash
+# Python dependencies
+pip-audit --requirement requirements.txt --output json > dep-audit.json
+
+# npm dependencies
+npm audit --json > npm-audit.json
+```
 
 ## Examples
 
-### Security Review of a Sample PR
+### Example Review Comment (Critical)
 
-```markdown
-# Security Review: PR #287 - Add File Upload and User Search
+> **SECURITY: SQL Injection (Critical, OWASP A03)**
+>
+> File: `app/repositories/user_repository.py:47`
+>
+> ```python
+> query = f"SELECT * FROM users WHERE name LIKE '%{search_term}%'"
+> ```
+>
+> This constructs a raw SQL query with string interpolation, allowing SQL injection.
+> An attacker could input `'; DROP TABLE users; --` to destroy data.
+>
+> **Fix:** Use SQLAlchemy ORM filtering:
+> ```python
+> users = db.query(User).filter(User.name.ilike(f"%{search_term}%")).all()
+> ```
 
-## Summary
-Reviewed 6 files. Found 4 issues (1 Critical, 1 High, 1 Medium, 1 Low).
-Merge BLOCKED until Critical and High are resolved.
+### Example Review Comment (Medium)
 
-## Finding 1: SQL Injection in User Search
-- **File**: `src/repositories/user_repo.py:89`
-- **Type**: A03 Injection - SQL Injection
-- **Severity**: Critical
-- **Description**: f-string inside `text()` allows SQL injection via search parameter.
-- **Fix**: Use bind parameters: `text("... WHERE name LIKE :name"), {"name": f"%{name}%"}`
-
-## Finding 2: Unrestricted File Upload
-- **File**: `src/routers/uploads.py:15`
-- **Severity**: High
-- **Fix**: Add extension allowlist, size limit, MIME validation, safe filename.
-
-## Finding 3: Missing Rate Limit on Search
-- **File**: `src/routers/users.py:34`
-- **Severity**: Medium
-- **Fix**: Add `@limiter.limit("30/minute")`.
-
-## Finding 4: Stack Trace in Error Response
-- **File**: `src/routers/uploads.py:22`
-- **Severity**: Low
-- **Fix**: Return generic error message; log exception server-side.
-```
-
-### Running the Automated Scanner
-
-```bash
-python scripts/security-scan.py src/
-bandit -r src/ -ll --format json
-safety check --full-report
-cd frontend && npm audit --audit-level=high
-```
-
-## Edge Cases
-
-### Third-Party Integrations
-
-- **OAuth callback URLs** must be validated against a whitelist to prevent authorization code leakage via open redirect.
-- **Webhook endpoints** must validate signatures. Never trust incoming webhooks without verification.
-- **API keys for third-party services** must be in environment variables, not source code, and never logged.
-- **External API responses** must be validated before use. Do not assume structure or safety.
-
-```python
-# SECURE: Validate webhook signature
-def verify_webhook(payload: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(f"sha256={expected}", signature)
-```
-
-### File Uploads
-
-Defense in depth: (1) extension allowlist, (2) MIME validation with `python-magic`, (3) size limit at web server and application level, (4) UUID-based storage filename, (5) storage outside web root or in S3, (6) antivirus scanning for high-risk apps.
-
-### WebSocket Security
-
-- Authenticate during handshake (JWT in query parameter or first message).
-- Validate every incoming message with a schema (Pydantic).
-- Apply rate limiting on message frequency and enforce max message size.
-
-```python
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
-    try:
-        user = verify_jwt_token(token)
-    except InvalidTokenError:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
-    await websocket.accept()
-    while True:
-        data = await websocket.receive_text()
-        if len(data) > MAX_MESSAGE_SIZE:
-            await websocket.close(code=4002, reason="Message too large")
-            return
-        message = validate_ws_message(data)
-        await handle_message(user, message)
-```
+> **SECURITY: Missing Rate Limiting (Medium, OWASP A04)**
+>
+> File: `app/routes/auth.py:12`
+>
+> The `/auth/login` endpoint has no rate limiting. An attacker could perform brute-force
+> password attacks at unlimited speed.
+>
+> **Fix:** Add rate limiting middleware:
+> ```python
+> from slowapi import Limiter
+> limiter = Limiter(key_func=get_remote_address)
+>
+> @router.post("/login")
+> @limiter.limit("5/minute")
+> async def login(request: Request, ...):
+> ```

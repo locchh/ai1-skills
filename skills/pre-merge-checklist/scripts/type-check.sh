@@ -1,49 +1,110 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env bash
+# type-check.sh — Run Python (mypy --strict) and TypeScript (tsc --noEmit) type checks.
+#
+# Usage:
+#   ./type-check.sh [--output-dir <dir>] [--python-only] [--ts-only]
+#
+# Options:
+#   --output-dir <dir>   Directory to write results (default: ./check-results)
+#   --python-only        Run only Python type checking (mypy)
+#   --ts-only            Run only TypeScript type checking (tsc)
 
-# type-check.sh
-# Run static type checks for Python (mypy) and TypeScript (tsc).
+set -uo pipefail
 
-FAIL=0
+# ─── Defaults ───────────────────────────────────────────────────────────────────
+OUTPUT_DIR="./check-results"
+RUN_PYTHON=true
+RUN_TS=true
 
-echo "============================================"
-echo "  Static Type Checking"
-echo "============================================"
+# ─── Parse arguments ────────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --python-only)
+            RUN_TS=false
+            shift
+            ;;
+        --ts-only)
+            RUN_PYTHON=false
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--output-dir <dir>] [--python-only] [--ts-only]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
 
-# --- Python (mypy) --------------------------------------------------------
+# ─── Setup ───────────────────────────────────────────────────────────────────────
+mkdir -p "$OUTPUT_DIR"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OVERALL_EXIT=0
+
+echo "=== Type Check Suite ==="
+echo "Output directory: ${OUTPUT_DIR}"
 echo ""
-echo "-- mypy (Python) --"
-if command -v mypy &>/dev/null; then
-    if mypy src/ --strict; then
-        echo "PASS: mypy found no issues."
+
+# ─── Python Type Checking (mypy) ─────────────────────────────────────────────────
+if [[ "$RUN_PYTHON" == true ]]; then
+    echo "─── Python (mypy --strict) ───"
+    MYPY_FILE="$OUTPUT_DIR/mypy-report-${TIMESTAMP}.txt"
+
+    mypy app/ --strict \
+        --no-error-summary \
+        --show-column-numbers \
+        --show-error-codes \
+        --pretty \
+        2>&1 | tee "$MYPY_FILE"
+    MYPY_EXIT=${PIPESTATUS[0]}
+
+    echo "" >> "$MYPY_FILE"
+    echo "Timestamp: $(date -Iseconds)" >> "$MYPY_FILE"
+
+    if [[ $MYPY_EXIT -eq 0 ]]; then
+        echo "Python type check: PASS"
+        echo "Status: PASS" >> "$MYPY_FILE"
     else
-        echo "FAIL: mypy reported type errors."
-        FAIL=1
+        echo "Python type check: FAIL"
+        echo "Status: FAIL" >> "$MYPY_FILE"
+        OVERALL_EXIT=1
     fi
-else
-    echo "SKIP: mypy is not installed."
+    echo ""
 fi
 
-# --- TypeScript (tsc) -----------------------------------------------------
-echo ""
-echo "-- tsc (TypeScript) --"
-if [ -f "tsconfig.json" ]; then
-    if npx tsc --noEmit; then
-        echo "PASS: tsc found no issues."
+# ─── TypeScript Type Checking (tsc) ──────────────────────────────────────────────
+if [[ "$RUN_TS" == true ]]; then
+    echo "─── TypeScript (tsc --noEmit) ───"
+    TSC_FILE="$OUTPUT_DIR/tsc-report-${TIMESTAMP}.txt"
+
+    npx tsc --noEmit --pretty 2>&1 | tee "$TSC_FILE"
+    TSC_EXIT=${PIPESTATUS[0]}
+
+    echo "" >> "$TSC_FILE"
+    echo "Timestamp: $(date -Iseconds)" >> "$TSC_FILE"
+
+    if [[ $TSC_EXIT -eq 0 ]]; then
+        echo "TypeScript type check: PASS"
+        echo "Status: PASS" >> "$TSC_FILE"
     else
-        echo "FAIL: tsc reported type errors."
-        FAIL=1
+        echo "TypeScript type check: FAIL"
+        echo "Status: FAIL" >> "$TSC_FILE"
+        OVERALL_EXIT=1
     fi
-else
-    echo "SKIP: no tsconfig.json found."
+    echo ""
 fi
 
-# --- Summary ---------------------------------------------------------------
-echo ""
-if [ "${FAIL}" -eq 0 ]; then
-    echo "All type checks passed."
+# ─── Summary ─────────────────────────────────────────────────────────────────────
+if [[ $OVERALL_EXIT -eq 0 ]]; then
+    echo "OVERALL: PASS — All type checks passed."
 else
-    echo "One or more type checks failed."
+    echo "OVERALL: FAIL — One or more type checks failed. See reports in ${OUTPUT_DIR}/"
 fi
 
-exit "${FAIL}"
+exit $OVERALL_EXIT

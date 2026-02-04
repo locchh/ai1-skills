@@ -19,370 +19,212 @@ context: fork
 
 # TDD Workflow
 
-Strict test-driven development workflow enforcement for Python and React projects. This
-skill changes agent behavior so that tests are always written before production code,
-following the red-green-refactor cycle without exception.
-
 ## When to Use
 
 Activate this skill when:
+- The user explicitly requests TDD, test-first, or red-green-refactor
+- Implementing new functions, methods, endpoints, or components where test-first is valuable
+- Fixing bugs where a regression test should be written first
+- The user says "write the test first", "TDD this", or "red-green-refactor"
 
-- The user explicitly requests TDD, test-first development, or red-green-refactor
-- Building new functions, methods, classes, or modules from scratch
-- Creating new API endpoints or route handlers
-- Building new React components or hooks
-- Fixing bugs that need regression test coverage
-- The user says "write tests first" or "I want test coverage for this"
-
-Do NOT use this skill when:
-
-- Modifying configuration files (settings, env, CI configs)
-- Writing static content (HTML templates, markdown, copy)
-- One-line trivial fixes where the behavior is self-evident
-- Updating dependencies or lock files
-- Writing database migrations (test the migration result, not the migration itself)
-- Generating boilerplate or scaffolding code
-- The user explicitly says "skip tests" or "no tests needed"
-
-If the user asks for help writing tests but does not want TDD workflow enforcement, use
-`pytest-patterns` (backend) or `react-testing-patterns` (frontend) instead. This skill
-is about the workflow discipline, not the testing patterns themselves.
+Do NOT use this skill for:
+- Configuration files, environment setup, or static content
+- One-line fixes or trivial changes
+- Exploratory prototyping or proof-of-concept code
+- Code that cannot be meaningfully tested in isolation
+- Testing pattern details (use `pytest-patterns` or `react-testing-patterns` for HOW to write tests)
 
 ## Instructions
 
 ### The TDD Cycle
 
-Every piece of functionality MUST go through these three phases in strict order. There
-are no exceptions. Do not combine phases or skip ahead.
-
-#### Phase 1: RED -- Write ONE Failing Test
-
-1. Identify the smallest unit of behavior to implement next.
-2. Write exactly ONE test that describes that behavior.
-3. The test MUST assert the expected outcome clearly.
-4. Run the test suite and confirm the new test FAILS.
-5. If the test passes without new code, the test is wrong or the behavior already exists.
-   Investigate before proceeding.
-
-The failing test output is your specification. Read the failure message carefully. It
-tells you exactly what code you need to write.
-
 ```
-# Backend: run only the failing test for fast feedback
-pytest tests/unit/test_user_service.py::test_create_user_returns_user_object -x
-
-# Frontend: run tests in watch mode filtered to file
-npm test -- --watch tests/UserForm.test.tsx
+┌─────────────────────────────────────────────────────┐
+│                                                     │
+│   ┌─────┐     ┌───────┐     ┌──────────┐          │
+│   │ RED │ ──→ │ GREEN │ ──→ │ REFACTOR │ ──→ ...  │
+│   └─────┘     └───────┘     └──────────┘          │
+│                                                     │
+│   Write ONE    Write MINIMUM   Clean up code        │
+│   failing      code to make    while ALL tests      │
+│   test         it pass         stay GREEN            │
+│                                                     │
+└─────────────────────────────────────────────────────┘
 ```
 
-#### Phase 2: GREEN -- Write MINIMUM Code to Pass
+### Phase 1: RED — Write a Failing Test
 
-1. Write the absolute minimum production code to make the failing test pass.
-2. Do NOT add extra functionality, handle edge cases, or refactor yet.
-3. Do NOT write more than what the test demands.
-4. Run the FULL test suite (not just the new test) to confirm all tests pass.
-5. If any test fails, fix the production code until ALL tests are green.
+1. Write exactly ONE test that describes the expected behavior
+2. The test must be specific: test one behavior, not multiple
+3. Run the test suite and confirm the new test FAILS
+4. The failure message should clearly describe what is missing
 
-```
-# Backend: run full suite to ensure nothing broke
-pytest -x
-
-# Frontend: run full suite
-npm test -- --run
+**Backend (pytest):**
+```bash
+pytest tests/unit/test_user_service.py::test_create_user_returns_user -x
+# Expected: FAILED (function/class does not exist yet)
 ```
 
-Resist the temptation to "just add this one extra thing." If you think of another
-behavior, write it down as a future test. Stay in the GREEN phase.
-
-#### Phase 3: REFACTOR -- Clean Up While Green
-
-1. Review both the test code and the production code.
-2. Remove duplication. Improve naming. Extract helpers or constants.
-3. Simplify logic without changing behavior.
-4. After EACH refactoring change, run the full test suite.
-5. If any test fails, undo the refactoring change immediately.
-6. Commit when all tests pass and the code is clean.
-
-```
-# Verify after each refactor step
-pytest -x && echo "REFACTOR SAFE"
-
-# Or frontend
-npm test -- --run && echo "REFACTOR SAFE"
+**Frontend (Vitest):**
+```bash
+npx vitest run src/hooks/useAuth.test.ts --reporter=verbose
+# Expected: FAILED (hook/component does not exist yet)
 ```
 
-#### Then Repeat
+**Rules for RED phase:**
+- Write the simplest test that expresses the requirement
+- The test should fail for the RIGHT reason (missing implementation, not syntax error)
+- Don't write more than one failing test at a time
+- Import from the location where the code WILL live (even though it doesn't exist yet)
 
-Go back to Phase 1 with the next behavior. Each cycle should take 2-10 minutes.
+### Phase 2: GREEN — Make It Pass
 
-### Rules -- Non-Negotiable
+1. Write the MINIMUM code to make the failing test pass
+2. Do NOT add extra functionality, error handling, or edge cases
+3. It's okay to hardcode values or use simple implementations
+4. Run the test suite and confirm ALL tests pass (not just the new one)
 
-1. **NEVER write production code without a failing test first.** If you catch yourself
-   writing production code, stop. Write the test. See it fail. Then proceed.
+```bash
+# Backend
+pytest tests/unit/test_user_service.py -x
 
-2. **NEVER write more than one failing test at a time.** One test, one behavior, one
-   cycle. If you have multiple tests in your head, write them down as comments or a
-   TODO list, but only implement one at a time.
-
-3. **COMMIT after each GREEN phase.** Each commit represents a working increment. The
-   commit message should describe the behavior added, not the implementation details.
-   Format: `test: add [behavior] | feat: implement [behavior]`
-
-4. **Each test describes exactly one behavior.** If a test name contains "and," split
-   it into two tests. The test name is the specification.
-
-5. **Tests must be deterministic.** No randomness, no time-dependence, no external
-   service calls. Mock what you must, freeze time if needed.
-
-6. **Tests must be fast.** Unit tests under 100ms each. If a test is slow, it belongs
-   in integration, not unit.
-
-### Backend TDD Flow (Python / pytest)
-
-Follow this exact sequence for each cycle:
-
-```
-Step 1: Write the test
-  -> Edit tests/unit/test_<module>.py
-  -> Add ONE test function: test_<module>_<behavior>
-
-Step 2: Run and confirm failure
-  -> pytest tests/unit/test_<module>.py::test_<module>_<behavior> -x
-  -> Confirm: FAILED (expected)
-
-Step 3: Write minimum production code
-  -> Edit src/<module>.py
-  -> Add minimum code to pass
-
-Step 4: Run full suite and confirm green
-  -> pytest -x
-  -> Confirm: ALL PASSED
-
-Step 5: Refactor
-  -> Clean up production code and test code
-  -> pytest -x after each change
-  -> Confirm: ALL PASSED
-
-Step 6: Commit
-  -> git add tests/unit/test_<module>.py src/<module>.py
-  -> git commit -m "feat: <behavior description>"
+# Frontend
+npx vitest run src/hooks/useAuth.test.ts
 ```
 
-### Frontend TDD Flow (React / Testing Library)
+**Rules for GREEN phase:**
+- Minimum code means minimum — if a constant satisfies the test, use a constant
+- Do not add code that no test requires
+- Do not refactor during this phase
+- Do not write additional tests during this phase
+- If tests pass, move to REFACTOR
 
-Follow this exact sequence for each cycle:
+### Phase 3: REFACTOR — Clean Up
 
-```
-Step 1: Write the test
-  -> Edit src/components/__tests__/<Component>.test.tsx
-  -> Add ONE test: it('should <behavior>')
+1. Improve code quality while keeping all tests green
+2. Remove duplication (DRY)
+3. Improve naming and readability
+4. Extract functions or classes if needed
+5. Run tests after EVERY change — they must stay green
 
-Step 2: Run and confirm failure
-  -> npm test -- --run src/components/__tests__/<Component>.test.tsx
-  -> Confirm: FAILED (expected)
-
-Step 3: Write minimum component code
-  -> Edit src/components/<Component>.tsx
-  -> Add minimum JSX/logic to pass
-
-Step 4: Run full suite and confirm green
-  -> npm test -- --run
-  -> Confirm: ALL PASSED
-
-Step 5: Refactor
-  -> Extract subcomponents, custom hooks, utilities
-  -> npm test -- --run after each change
-  -> Confirm: ALL PASSED
-
-Step 6: Commit
-  -> git add relevant files
-  -> git commit -m "feat: <behavior description>"
+```bash
+# After each refactoring change
+pytest tests/ -x    # Must pass
+npx vitest run      # Must pass
 ```
 
-### Bug Fix TDD
+**Rules for REFACTOR phase:**
+- Every change must keep tests green
+- Refactor both production code AND test code
+- Do NOT add new functionality (that requires a new RED phase)
+- If you break a test, undo the refactoring immediately
 
-When fixing a bug, the TDD cycle is the same but starts with reproducing the bug:
+### Phase 4: COMMIT
 
-1. **Understand the bug.** Read the report, reproduce manually if possible.
-2. **RED: Write a test that reproduces the bug.** The test should fail with the exact
-   same symptom the user reported. This is your proof the bug exists.
-3. **GREEN: Fix the bug.** Write the minimum code to make the reproducing test pass.
-4. **REFACTOR: Clean up the fix.** Ensure all tests pass.
-5. **Commit.** The commit message references the bug: `fix: prevent duplicate user
-   creation (closes #123)`
+After a successful REFACTOR phase:
+1. Stage all changes (test + implementation)
+2. Commit with a descriptive message
+3. Return to Phase 1 (RED) for the next behavior
 
-The reproducing test is now a permanent regression guard. The bug can never return
-without this test catching it.
+### Strict TDD Rules
+
+These rules are non-negotiable when this skill is active:
+
+1. **NEVER write production code without a failing test first**
+2. **NEVER write more than one failing test at a time**
+3. **NEVER add functionality that no test requires**
+4. **ALWAYS run tests after every change**
+5. **ALWAYS commit after each successful GREEN-REFACTOR cycle**
+6. **ALWAYS keep the RED-GREEN-REFACTOR cycle short** (minutes, not hours)
+
+### Backend TDD Flow (pytest)
+
+```
+1. Write test:     tests/unit/test_user_service.py::test_create_user_returns_user
+2. Run:            pytest tests/unit/test_user_service.py::test_create_user_returns_user -x
+3. See:            FAILED - ImportError or AssertionError
+4. Implement:      app/services/user_service.py (minimum code)
+5. Run:            pytest tests/unit/test_user_service.py -x
+6. See:            PASSED
+7. Refactor:       Clean up, run tests again
+8. Commit:         "Add UserService.create_user"
+9. Next test:      test_create_user_rejects_duplicate_email
+```
+
+### Frontend TDD Flow (Testing Library)
+
+```
+1. Write test:     src/components/UserCard.test.tsx::renders user name
+2. Run:            npx vitest run src/components/UserCard.test.tsx
+3. See:            FAILED - module not found
+4. Implement:      src/components/UserCard.tsx (minimum code)
+5. Run:            npx vitest run src/components/UserCard.test.tsx
+6. See:            PASSED
+7. Refactor:       Clean up, run tests again
+8. Commit:         "Add UserCard component"
+9. Next test:      calls onEdit when button clicked
+```
+
+### Bug Fix TDD Flow
+
+When fixing a bug, always start with a failing test that reproduces the bug:
+
+```
+1. Reproduce:      Understand the bug and its trigger condition
+2. Write test:     Test that exercises the exact scenario that causes the bug
+3. Run:            Confirm FAILED (the test reproduces the bug)
+4. Fix:            Implement the minimum fix
+5. Run:            Confirm PASSED (bug is fixed)
+6. Refactor:       Clean up if needed
+7. Commit:         "Fix: [describe the bug]"
+```
+
+This guarantees the bug cannot regress — the test will catch it.
 
 ## Examples
 
-### TDD a UserService.create_user() Method
+### TDD: UserService.create_user (3 Cycles)
 
-**Cycle 1: Basic user creation**
-
-RED -- Write the first test:
-
+**Cycle 1 — RED:** Test that create_user returns a user
 ```python
-# tests/unit/test_user_service.py
-import pytest
-from app.services.user_service import UserService
-from app.schemas.user import UserCreate
-
-class TestCreateUser:
-    def test_create_user_returns_user_with_email(self, db_session):
-        service = UserService(db_session)
-        user_data = UserCreate(email="alice@example.com", password="SecureP@ss1")
-
-        result = service.create_user(user_data)
-
-        assert result.email == "alice@example.com"
+async def test_create_user_returns_user(db_session):
+    service = UserService(db_session)
+    user = await service.create_user(UserCreate(email="a@b.com", password="12345678", display_name="A"))
+    assert user.email == "a@b.com"
+    assert user.id is not None
 ```
+**GREEN:** Implement `UserService.create_user` with basic logic.
+**REFACTOR:** Extract password hashing. Commit.
 
-Run: `pytest tests/unit/test_user_service.py::TestCreateUser::test_create_user_returns_user_with_email -x`
-Expected: FAILED (ImportError or AttributeError -- UserService.create_user does not exist)
-
-GREEN -- Write minimum code:
-
+**Cycle 2 — RED:** Test that duplicate email raises error
 ```python
-# app/services/user_service.py
-from app.schemas.user import UserCreate, UserRead
-
-class UserService:
-    def __init__(self, db):
-        self.db = db
-
-    def create_user(self, data: UserCreate) -> UserRead:
-        user = User(email=data.email, hashed_password="placeholder")
-        self.db.add(user)
-        self.db.flush()
-        return UserRead.model_validate(user)
+async def test_create_user_rejects_duplicate_email(db_session):
+    service = UserService(db_session)
+    await service.create_user(UserCreate(email="a@b.com", password="12345678", display_name="A"))
+    with pytest.raises(ConflictError):
+        await service.create_user(UserCreate(email="a@b.com", password="87654321", display_name="B"))
 ```
+**GREEN:** Add duplicate check before insert.
+**REFACTOR:** Clean up. Commit.
 
-Run: `pytest -x` -> ALL PASSED. Commit.
-
-**Cycle 2: Password is hashed**
-
-RED:
-
+**Cycle 3 — RED:** Test that password is hashed
 ```python
-    def test_create_user_hashes_password(self, db_session):
-        service = UserService(db_session)
-        user_data = UserCreate(email="bob@example.com", password="SecureP@ss1")
-
-        service.create_user(user_data)
-
-        stored_user = db_session.query(User).filter_by(email="bob@example.com").first()
-        assert stored_user.hashed_password != "SecureP@ss1"
-        assert stored_user.hashed_password.startswith("$2b$")
+async def test_create_user_hashes_password(db_session):
+    service = UserService(db_session)
+    user = await service.create_user(UserCreate(email="a@b.com", password="12345678", display_name="A"))
+    assert user.hashed_password != "12345678"
+    assert verify_password("12345678", user.hashed_password)
 ```
-
-Run: FAILED (hashed_password is "placeholder", not bcrypt). Expected.
-
-GREEN:
-
-```python
-    def create_user(self, data: UserCreate) -> UserRead:
-        hashed = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
-        user = User(email=data.email, hashed_password=hashed)
-        self.db.add(user)
-        self.db.flush()
-        return UserRead.model_validate(user)
-```
-
-Run: `pytest -x` -> ALL PASSED. Commit.
-
-**Cycle 3: Duplicate email raises error**
-
-RED:
-
-```python
-    def test_create_user_duplicate_email_raises(self, db_session):
-        service = UserService(db_session)
-        user_data = UserCreate(email="dup@example.com", password="SecureP@ss1")
-
-        service.create_user(user_data)
-
-        with pytest.raises(ValueError, match="Email already registered"):
-            service.create_user(user_data)
-```
-
-Run: FAILED (IntegrityError instead of ValueError, or no error). Expected.
-
-GREEN:
-
-```python
-    def create_user(self, data: UserCreate) -> UserRead:
-        existing = self.db.query(User).filter_by(email=data.email).first()
-        if existing:
-            raise ValueError("Email already registered")
-        hashed = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
-        user = User(email=data.email, hashed_password=hashed)
-        self.db.add(user)
-        self.db.flush()
-        return UserRead.model_validate(user)
-```
-
-Run: `pytest -x` -> ALL PASSED. Commit.
-
-Three cycles, three behaviors, three commits. Each increment is tested and working.
+**GREEN:** Already passing from cycle 1 refactor? Then this test is a verification, not a RED. Write a test for a NEW behavior instead.
 
 ## Edge Cases
 
-### When to Skip TDD
+- **When to skip TDD:** Configuration files (`.env`, `tsconfig.json`), static content, auto-generated code (Alembic migrations), one-off scripts, and exploratory prototyping.
 
-TDD is a discipline, not a religion. Skip it when the overhead outweighs the benefit:
+- **TDD with external dependencies:** Mock at the boundary. If testing a service that calls an external API, mock the API client, not the HTTP library. Test the service's behavior, not the mock.
 
-- **Configuration files**: `settings.py`, `.env`, `pyproject.toml`. Test the behavior
-  the configuration enables, not the configuration itself.
-- **Static content**: HTML templates, marketing copy, README files.
-- **Generated code**: ORM migrations, protobuf stubs, OpenAPI client code. Test what
-  uses them, not the generated output.
-- **Exploratory spikes**: When you are investigating feasibility, not building features.
-  Throw away the spike and TDD the real implementation.
-- **One-line obvious fixes**: Typo in a string, bumping a version number, fixing an
-  import path. Use judgment -- if the fix could break something, write the test.
+- **Large features:** Break the feature into small, testable behaviors. Each behavior gets its own RED-GREEN-REFACTOR cycle. The sum of all cycles implements the full feature.
 
-When you skip TDD, leave a comment or commit message explaining why: `chore: update
-config (no TDD -- static configuration only)`
+- **Refactoring existing code without tests:** First write tests for the existing behavior (characterization tests). Then refactor with those tests as a safety net. This is not strict TDD but is a valid use of the test-first mindset.
 
-### TDD with External Dependencies
-
-External services (APIs, databases, message queues) require careful handling in TDD:
-
-- **Unit tests**: Always mock external dependencies. The test must run offline and in
-  milliseconds. Use `unittest.mock.patch` or `pytest-mock`.
-- **Integration tests**: Use real dependencies but in controlled environments (test
-  database, mock server, Docker containers). These run slower and are separate from the
-  TDD cycle.
-- **Contract tests**: When mocking an external API, record the real response first, then
-  replay it in tests. Libraries like `responses` (Python) or `msw` (React) help.
-
-The TDD cycle itself uses unit tests. Integration tests are written after the TDD cycles
-are complete to verify the pieces connect correctly.
-
-### Handling Flaky Tests
-
-If a test passes sometimes and fails sometimes, it is not a valid TDD test:
-
-1. Identify the source of flakiness (time, randomness, concurrency, external service).
-2. Eliminate it (freeze time with `freezegun`, seed random, serialize tests, mock service).
-3. If you cannot eliminate flakiness, move the test to integration suite and mark it
-   `@pytest.mark.flaky(reruns=3)` as a temporary measure.
-4. Never ignore a flaky test. It erodes trust in the entire test suite.
-
-### TDD for Async Code
-
-Async code follows the same RED-GREEN-REFACTOR cycle. The only difference is test setup:
-
-```python
-import pytest
-
-@pytest.mark.anyio
-async def test_async_create_user(async_db_session):
-    service = UserService(async_db_session)
-    result = await service.create_user(UserCreate(email="a@b.com", password="Pass123!"))
-    assert result.email == "a@b.com"
-```
-
-The cycle is identical. Write async test, see it fail, write async code, see it pass,
-refactor, commit. The `anyio` marker handles the event loop.
+- **Pair with pattern skills:** This skill defines the WORKFLOW (when to write tests vs code). Use `pytest-patterns` or `react-testing-patterns` for the PATTERNS (how to structure tests, which assertions to use).

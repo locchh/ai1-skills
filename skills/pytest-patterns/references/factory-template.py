@@ -1,144 +1,152 @@
 """
-factory_boy Factory Template
-==============================
+factory-template.py — factory_boy factories for test data generation.
 
-Factories generate realistic test data with minimal boilerplate.  They
-integrate with SQLAlchemy so that `Factory.create()` persists objects
-through the test session (which rolls back after each test).
+Place factory files at: tests/factories/
 
-Key concepts:
-  SubFactory     -> creates a related object automatically
-  LazyAttribute  -> computes a field from other fields
-  Trait          -> activates a named set of overrides
-  Sequence       -> guarantees uniqueness across calls
+Each factory provides:
+  - Sensible defaults so tests can create objects with zero arguments
+  - Overridable fields for specific test scenarios
+  - Sequence-based IDs to avoid collisions
+  - Both in-memory (.build()) and DB-persisted (.create()) usage
 
-Usage examples at the bottom of this file.
+Dependencies:
+  pip install factory-boy
 """
-
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
-from uuid import uuid4
 
 import factory
-from factory import Faker, LazyAttribute, Sequence, SubFactory, Trait
-from factory.alchemy import SQLAlchemyModelFactory
+from datetime import datetime, timezone
 
-# Application models
-from app.models.user import User
-from app.models.order import Order
+from app.models import User, Order, OrderItem
 
 
-# ---------------------------------------------------------------------------
-# 1. Base factory — shared configuration for all factories
-# ---------------------------------------------------------------------------
-class BaseFactory(SQLAlchemyModelFactory):
+# ─── User Factory ────────────────────────────────────────────────────────────────
+
+class UserFactory(factory.alchemy.SQLAlchemyModelFactory):
     """
-    All factories inherit from this base.
+    Factory for creating User model instances.
 
-    The session is injected at test time via the `_bind_factories` fixture
-    in conftest.py, so factories always write through the transactional
-    test session.
+    Usage:
+        # In-memory (no DB write):
+        user = UserFactory.build()
+
+        # Persisted to DB (requires session wiring in conftest):
+        user = UserFactory.create()
+
+        # Override defaults:
+        admin = UserFactory.build(role="admin", is_active=True)
+
+        # Batch:
+        users = UserFactory.build_batch(5)
     """
 
-    class Meta:
-        abstract = True
-        sqlalchemy_session = None            # set by fixture
-        sqlalchemy_session_persistence = "flush"  # flush, not commit
-
-
-# ---------------------------------------------------------------------------
-# 2. UserFactory
-# ---------------------------------------------------------------------------
-class UserFactory(BaseFactory):
     class Meta:
         model = User
+        sqlalchemy_session = None           # Set per-test via conftest fixture
+        sqlalchemy_session_persistence = "commit"
 
-    id = LazyAttribute(lambda _: uuid4())
-    email = Sequence(lambda n: f"user{n}@example.com")
-    name = Faker("name")
-    hashed_password = "$2b$12$fakehash"  # bcrypt-shaped placeholder
+    id = factory.Sequence(lambda n: n + 1)
+    email = factory.LazyAttribute(lambda obj: f"user{obj.id}@example.com")
+    display_name = factory.Faker("name")
+    role = "member"
     is_active = True
-    created_at = LazyAttribute(lambda _: datetime.now(timezone.utc))
+    created_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    updated_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
 
-    # -- Traits: activate with UserFactory(admin=True) ---------------------
     class Params:
-        admin = Trait(
+        """Traits for common variations."""
+
+        admin = factory.Trait(
             role="admin",
-            email=Sequence(lambda n: f"admin{n}@example.com"),
+            display_name=factory.LazyAttribute(lambda obj: f"Admin {obj.id}"),
         )
-        inactive = Trait(
+
+        inactive = factory.Trait(
             is_active=False,
         )
-        with_avatar = Trait(
-            avatar_url=Faker("image_url"),
-        )
-
-    # Default role when no trait is active
-    role = "member"
 
 
-# ---------------------------------------------------------------------------
-# 3. OrderFactory — demonstrates relationships and computed fields
-# ---------------------------------------------------------------------------
-class OrderFactory(BaseFactory):
+# ─── Order Factory ───────────────────────────────────────────────────────────────
+
+class OrderFactory(factory.alchemy.SQLAlchemyModelFactory):
+    """
+    Factory for creating Order model instances.
+
+    Usage:
+        # Basic order (auto-creates a user):
+        order = OrderFactory.build()
+
+        # Order for a specific user:
+        order = OrderFactory.build(user_id=42)
+
+        # Override status:
+        shipped = OrderFactory.build(status="shipped")
+    """
+
     class Meta:
         model = Order
+        sqlalchemy_session = None
+        sqlalchemy_session_persistence = "commit"
 
-    id = LazyAttribute(lambda _: uuid4())
-
-    # SubFactory: automatically creates a User if none is provided
-    user = SubFactory(UserFactory)
-    user_id = LazyAttribute(lambda obj: obj.user.id)
-
+    id = factory.Sequence(lambda n: n + 1)
+    user_id = factory.LazyAttribute(lambda obj: UserFactory.build().id)
     status = "pending"
-    quantity = Faker("random_int", min=1, max=20)
-    unit_price = LazyAttribute(
-        lambda _: Decimal(str(round(Faker("pyfloat", min_value=5, max_value=500).evaluate(None, None, {"locale": None}), 2)))
-    )
+    total_cents = factory.Faker("random_int", min=500, max=500000)
+    currency = "USD"
+    notes = None
+    created_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    updated_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
 
-    # LazyAttribute: compute total from other fields
-    total = LazyAttribute(lambda obj: obj.unit_price * obj.quantity)
-
-    created_at = LazyAttribute(lambda _: datetime.now(timezone.utc))
-    shipped_at = None
-
-    # -- Traits ------------------------------------------------------------
     class Params:
-        shipped = Trait(
-            status="shipped",
-            shipped_at=LazyAttribute(
-                lambda obj: obj.created_at + timedelta(days=2)
-            ),
+        """Traits for common order states."""
+
+        completed = factory.Trait(
+            status="completed",
         )
-        cancelled = Trait(
+
+        cancelled = factory.Trait(
             status="cancelled",
-            total=Decimal("0.00"),
+            notes="Cancelled by customer",
         )
 
 
-# ---------------------------------------------------------------------------
-# Usage examples (for reference — not executed)
-# ---------------------------------------------------------------------------
-"""
-# Basic creation
-user = UserFactory()            # persisted to DB, all fields auto-generated
-user = UserFactory.build()      # in-memory only, not persisted
+# ─── Order Item Factory ──────────────────────────────────────────────────────────
 
-# Override fields
-user = UserFactory(name="Alice", email="alice@test.com")
+class OrderItemFactory(factory.alchemy.SQLAlchemyModelFactory):
+    """
+    Factory for creating OrderItem model instances.
 
-# Use a trait
-admin = UserFactory(admin=True)
-inactive = UserFactory(inactive=True)
+    Usage:
+        item = OrderItemFactory.build(order_id=1, product_name="Widget")
+    """
 
-# Create related objects
-order = OrderFactory()                # also creates a User automatically
-order = OrderFactory(user=admin)      # use an existing user
+    class Meta:
+        model = OrderItem
+        sqlalchemy_session = None
+        sqlalchemy_session_persistence = "commit"
 
-# Batch creation
-users = UserFactory.create_batch(10)
-admins = UserFactory.create_batch(3, admin=True)
+    id = factory.Sequence(lambda n: n + 1)
+    order_id = factory.LazyAttribute(lambda obj: OrderFactory.build().id)
+    product_name = factory.Faker("word")
+    quantity = factory.Faker("random_int", min=1, max=10)
+    unit_price_cents = factory.Faker("random_int", min=100, max=50000)
 
-# Build without persistence (useful for unit tests that don't need the DB)
-order = OrderFactory.build()
-"""
+
+# ─── Usage Examples ──────────────────────────────────────────────────────────────
+#
+# # Build without persisting (unit tests):
+# user = UserFactory.build()
+# user = UserFactory.build(role="admin")
+# users = UserFactory.build_batch(3)
+#
+# # Build with trait:
+# admin = UserFactory.build(admin=True)
+# inactive = UserFactory.build(inactive=True)
+#
+# # Persisted (integration tests with conftest session wiring):
+# user = UserFactory.create()
+# order = OrderFactory.create(user_id=user.id)
+#
+# # Related objects:
+# user = UserFactory.create()
+# order = OrderFactory.create(user_id=user.id)
+# items = OrderItemFactory.create_batch(3, order_id=order.id)

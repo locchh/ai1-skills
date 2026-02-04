@@ -1,177 +1,190 @@
 """
-API Integration Test Template
-===============================
+api-test-template.py — Annotated API integration test using httpx.AsyncClient.
 
-Tests FastAPI endpoints through an httpx.AsyncClient that speaks directly
-to the ASGI app (no real HTTP server).  Every test runs inside a rolled-back
-database transaction, so tests are isolated and fast.
+Place at: tests/integration/test_users_api.py
 
-Fixtures used:
-  client       -> unauthenticated AsyncClient
-  auth_client  -> AsyncClient with Authorization header
-  db_session   -> transactional SQLAlchemy AsyncSession
+This template demonstrates:
+  - Testing all CRUD endpoints for a resource
+  - Auth/unauth request paths
+  - Error response assertions (404, 409, 422)
+  - Pagination testing
+  - Using fixtures for test data
+
+Prerequisites:
+  - Root conftest.py provides: client, authenticated_client, admin_client, db_session
+  - factories/ provides: UserFactory
 """
 
 import pytest
 from httpx import AsyncClient
 
-from tests.factories import UserFactory, OrderFactory
+
+# ─── Mark the entire module as integration tests ─────────────────────────────────
+pytestmark = [pytest.mark.integration]
 
 
-# ---------------------------------------------------------------------------
-# 1. CRUD — Users resource
-# ---------------------------------------------------------------------------
-class TestUserEndpoints:
-    """Full CRUD lifecycle for /api/v1/users."""
+class TestCreateUser:
+    """POST /api/v1/users"""
 
-    # -- CREATE ------------------------------------------------------------
-    @pytest.mark.asyncio
-    async def test_create_user_returns_201(self, auth_client: AsyncClient):
-        """POST /api/v1/users with valid payload returns 201 and the new resource."""
-        payload = {"name": "Ada Lovelace", "email": "ada@example.com"}
+    async def test_create_user_success(self, authenticated_client: AsyncClient):
+        """Authenticated user can create a new user with valid data."""
+        payload = {
+            "email": "newuser@example.com",
+            "display_name": "New User",
+            "role": "member",
+        }
 
-        response = await auth_client.post("/api/v1/users", json=payload)
+        response = await authenticated_client.post("/api/v1/users", json=payload)
 
+        # Assert status first, then body
         assert response.status_code == 201
-        body = response.json()
-        assert body["data"]["name"] == "Ada Lovelace"
-        assert body["data"]["email"] == "ada@example.com"
-        assert "id" in body["data"]  # server-generated ID
+        data = response.json()
+        assert data["email"] == "newuser@example.com"
+        assert data["display_name"] == "New User"
+        assert data["role"] == "member"
+        assert "id" in data                     # Don't assert exact ID
+        assert "created_at" in data             # Don't assert exact timestamp
 
-    # -- READ (list) -------------------------------------------------------
-    @pytest.mark.asyncio
-    async def test_list_users_returns_paginated_results(
-        self, auth_client: AsyncClient, db_session
+    async def test_create_user_duplicate_email(
+        self, authenticated_client: AsyncClient, sample_user
     ):
-        """GET /api/v1/users returns a paginated list."""
-        # Arrange: seed 3 users via factory
-        for _ in range(3):
-            user = UserFactory.build()
-            db_session.add(user)
-        await db_session.flush()
+        """Creating a user with an existing email returns 409 Conflict."""
+        payload = {
+            "email": sample_user.email,         # Already exists
+            "display_name": "Duplicate",
+        }
 
-        response = await auth_client.get("/api/v1/users", params={"page": 1, "limit": 2})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 2
-        assert body["meta"]["total"] >= 3
-
-    # -- READ (single) -----------------------------------------------------
-    @pytest.mark.asyncio
-    async def test_get_user_by_id(self, auth_client: AsyncClient, db_session):
-        """GET /api/v1/users/:id returns the correct user."""
-        user = UserFactory.build()
-        db_session.add(user)
-        await db_session.flush()
-
-        response = await auth_client.get(f"/api/v1/users/{user.id}")
-
-        assert response.status_code == 200
-        assert response.json()["data"]["email"] == user.email
-
-    # -- UPDATE ------------------------------------------------------------
-    @pytest.mark.asyncio
-    async def test_update_user_returns_200(self, auth_client: AsyncClient, db_session):
-        """PATCH /api/v1/users/:id with valid payload returns updated resource."""
-        user = UserFactory.build(name="Old Name")
-        db_session.add(user)
-        await db_session.flush()
-
-        response = await auth_client.patch(
-            f"/api/v1/users/{user.id}",
-            json={"name": "New Name"},
-        )
-
-        assert response.status_code == 200
-        assert response.json()["data"]["name"] == "New Name"
-
-    # -- DELETE ------------------------------------------------------------
-    @pytest.mark.asyncio
-    async def test_delete_user_returns_204(self, auth_client: AsyncClient, db_session):
-        """DELETE /api/v1/users/:id removes the resource."""
-        user = UserFactory.build()
-        db_session.add(user)
-        await db_session.flush()
-
-        response = await auth_client.delete(f"/api/v1/users/{user.id}")
-        assert response.status_code == 204
-
-        # Verify the resource is gone
-        get_response = await auth_client.get(f"/api/v1/users/{user.id}")
-        assert get_response.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# 2. Error cases
-# ---------------------------------------------------------------------------
-class TestUserErrorCases:
-
-    @pytest.mark.asyncio
-    async def test_get_nonexistent_user_returns_404(self, auth_client: AsyncClient):
-        """GET /api/v1/users/:id with unknown ID returns 404."""
-        response = await auth_client.get("/api/v1/users/nonexistent-id")
-
-        assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
-
-    @pytest.mark.asyncio
-    async def test_create_duplicate_email_returns_409(
-        self, auth_client: AsyncClient, db_session
-    ):
-        """POST /api/v1/users with an already-taken email returns 409 Conflict."""
-        user = UserFactory.build(email="taken@example.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        response = await auth_client.post(
-            "/api/v1/users",
-            json={"name": "Another User", "email": "taken@example.com"},
-        )
+        response = await authenticated_client.post("/api/v1/users", json=payload)
 
         assert response.status_code == 409
         assert "already exists" in response.json()["detail"].lower()
 
-    @pytest.mark.asyncio
-    async def test_create_user_with_invalid_payload_returns_422(
-        self, auth_client: AsyncClient
-    ):
-        """POST /api/v1/users with missing required fields returns 422."""
-        response = await auth_client.post("/api/v1/users", json={})
+    async def test_create_user_invalid_email(self, authenticated_client: AsyncClient):
+        """Invalid email format returns 422 Unprocessable Entity."""
+        payload = {
+            "email": "not-an-email",
+            "display_name": "Bad Email",
+        }
+
+        response = await authenticated_client.post("/api/v1/users", json=payload)
 
         assert response.status_code == 422
-        errors = response.json()["detail"]
-        field_names = [e["loc"][-1] for e in errors]
-        assert "name" in field_names
-        assert "email" in field_names
 
-    @pytest.mark.asyncio
-    async def test_unauthenticated_request_returns_401(self, client: AsyncClient):
-        """Requests without a token are rejected with 401."""
-        response = await client.get("/api/v1/users")
+    async def test_create_user_unauthenticated(self, client: AsyncClient):
+        """Unauthenticated request returns 401."""
+        payload = {"email": "test@example.com", "display_name": "Test"}
+
+        response = await client.post("/api/v1/users", json=payload)
+
         assert response.status_code == 401
-        assert "authorization" in response.json()["detail"].lower()
 
 
-# ---------------------------------------------------------------------------
-# 3. Response header assertions
-# ---------------------------------------------------------------------------
-class TestResponseHeaders:
+class TestListUsers:
+    """GET /api/v1/users"""
 
-    @pytest.mark.asyncio
-    async def test_list_includes_cache_control(self, auth_client: AsyncClient):
-        """GET endpoints return appropriate cache headers."""
-        response = await auth_client.get("/api/v1/users")
+    async def test_list_users_success(self, authenticated_client: AsyncClient):
+        """Returns a paginated list of users."""
+        response = await authenticated_client.get("/api/v1/users?limit=10")
 
-        assert "cache-control" in response.headers
-        assert "no-store" in response.headers["cache-control"]
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data["items"], list)
+        assert "next_cursor" in data
+        assert "has_more" in data
 
-    @pytest.mark.asyncio
-    async def test_create_returns_location_header(self, auth_client: AsyncClient):
-        """POST returns a Location header pointing to the new resource."""
-        payload = {"name": "Grace Hopper", "email": "grace@example.com"}
-        response = await auth_client.post("/api/v1/users", json=payload)
+    async def test_list_users_pagination(self, authenticated_client: AsyncClient):
+        """Pagination returns correct page size."""
+        response = await authenticated_client.get("/api/v1/users?limit=2")
 
-        assert response.status_code == 201
-        assert "location" in response.headers
-        assert response.headers["location"].startswith("/api/v1/users/")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) <= 2
+
+    async def test_list_users_with_cursor(
+        self, authenticated_client: AsyncClient, sample_user
+    ):
+        """Cursor-based pagination returns next page."""
+        # Get first page
+        first_page = await authenticated_client.get("/api/v1/users?limit=1")
+        cursor = first_page.json().get("next_cursor")
+
+        if cursor:
+            second_page = await authenticated_client.get(
+                f"/api/v1/users?limit=1&cursor={cursor}"
+            )
+            assert second_page.status_code == 200
+
+
+class TestGetUser:
+    """GET /api/v1/users/{user_id}"""
+
+    async def test_get_user_success(
+        self, authenticated_client: AsyncClient, sample_user
+    ):
+        """Returns the user when they exist."""
+        response = await authenticated_client.get(f"/api/v1/users/{sample_user.id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == sample_user.id
+        assert data["email"] == sample_user.email
+
+    async def test_get_user_not_found(self, authenticated_client: AsyncClient):
+        """Returns 404 for a non-existent user ID."""
+        response = await authenticated_client.get("/api/v1/users/99999")
+
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
+
+class TestUpdateUser:
+    """PATCH /api/v1/users/{user_id}"""
+
+    async def test_update_user_success(
+        self, authenticated_client: AsyncClient, sample_user
+    ):
+        """Partial update succeeds with valid data."""
+        response = await authenticated_client.patch(
+            f"/api/v1/users/{sample_user.id}",
+            json={"display_name": "Updated Name"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["display_name"] == "Updated Name"
+
+    async def test_update_user_not_found(self, authenticated_client: AsyncClient):
+        """Updating a non-existent user returns 404."""
+        response = await authenticated_client.patch(
+            "/api/v1/users/99999",
+            json={"display_name": "Ghost"},
+        )
+
+        assert response.status_code == 404
+
+
+class TestDeleteUser:
+    """DELETE /api/v1/users/{user_id}"""
+
+    async def test_delete_user_admin_success(
+        self, admin_client: AsyncClient, sample_user
+    ):
+        """Admin can delete a user."""
+        response = await admin_client.delete(f"/api/v1/users/{sample_user.id}")
+
+        assert response.status_code == 204
+
+    async def test_delete_user_non_admin_forbidden(
+        self, authenticated_client: AsyncClient, sample_user
+    ):
+        """Non-admin cannot delete a user."""
+        response = await authenticated_client.delete(
+            f"/api/v1/users/{sample_user.id}"
+        )
+
+        assert response.status_code == 403
+
+    async def test_delete_user_not_found(self, admin_client: AsyncClient):
+        """Deleting a non-existent user returns 404."""
+        response = await admin_client.delete("/api/v1/users/99999")
+
+        assert response.status_code == 404

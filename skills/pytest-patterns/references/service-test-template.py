@@ -1,164 +1,255 @@
 """
-Service Unit Test Template
-============================
+service-test-template.py — Annotated service unit test with mocked repository.
 
-Tests the service (business logic) layer in isolation by mocking the
-repository.  This guarantees that failures point to logic bugs, not
-database issues.
+Place at: tests/unit/services/test_user_service.py
 
-Approach:
-  - Mock the repository with AsyncMock
-  - Inject the mock into the service
-  - Verify business rules, validation, and exception handling
-  - Use @pytest.mark.parametrize for combinatorial inputs
+This template demonstrates:
+  - Testing service business logic in isolation
+  - Mocking repositories (the data layer) with AsyncMock
+  - Mocking external services (email, notifications)
+  - Testing success paths, error paths, and edge cases
+  - Using parametrize for input variations
+
+Note on mocking strategy:
+  - Mock the repository layer (data access) so service tests run without a DB.
+  - Do NOT mock Pydantic validation or domain logic -- let it execute naturally.
+  - For integration tests that hit the real DB, see integration-test-template.py.
 """
 
-from decimal import Decimal
-from unittest.mock import AsyncMock, patch
-from uuid import uuid4
-
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
 
-from app.models.order import Order
-from app.services.order_service import OrderService
-from app.exceptions import InsufficientStockError, OrderNotFoundError
-from tests.factories import OrderFactory, UserFactory
+from app.services.user_service import UserService
+from app.models import User
+from app.exceptions import NotFoundError, ConflictError, ForbiddenError
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-@pytest.fixture
-def mock_repo() -> AsyncMock:
-    """Return a fully-mocked OrderRepository."""
-    return AsyncMock()
-
+# ─── Fixtures ────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def service(mock_repo: AsyncMock) -> OrderService:
-    """OrderService wired to the mocked repository."""
-    return OrderService(repository=mock_repo)
+def mock_user_repo():
+    """Create a mocked user repository with common async methods."""
+    repo = AsyncMock()
+    repo.get_by_id = AsyncMock(return_value=None)
+    repo.get_by_email = AsyncMock(return_value=None)
+    repo.create = AsyncMock()
+    repo.update = AsyncMock()
+    repo.delete = AsyncMock()
+    repo.list_all = AsyncMock(return_value=[])
+    return repo
 
 
-# ---------------------------------------------------------------------------
-# 1. Happy path
-# ---------------------------------------------------------------------------
-class TestPlaceOrder:
-
-    @pytest.mark.asyncio
-    async def test_place_order_persists_and_returns_order(
-        self, service: OrderService, mock_repo: AsyncMock
-    ):
-        """Service should calculate total, persist, and return the order."""
-        user = UserFactory.build()
-        mock_repo.create.return_value = OrderFactory.build(
-            user=user, quantity=3, unit_price=Decimal("10.00"), total=Decimal("30.00")
-        )
-
-        result = await service.place_order(
-            user_id=user.id, product_id="prod-1", quantity=3, unit_price=Decimal("10.00")
-        )
-
-        assert result.total == Decimal("30.00")
-        assert result.status == "pending"
-        mock_repo.create.assert_awaited_once()
+@pytest.fixture
+def user_service(mock_user_repo):
+    """Create a UserService with mocked dependencies."""
+    return UserService(user_repo=mock_user_repo)
 
 
-# ---------------------------------------------------------------------------
-# 2. Business rule enforcement
-# ---------------------------------------------------------------------------
-class TestBusinessRules:
-
-    @pytest.mark.asyncio
-    async def test_rejects_zero_quantity(self, service: OrderService):
-        """Placing an order with quantity <= 0 must raise ValueError."""
-        with pytest.raises(ValueError, match="Quantity must be at least 1"):
-            await service.place_order(
-                user_id=uuid4(), product_id="prod-1", quantity=0, unit_price=Decimal("5.00")
-            )
-
-    @pytest.mark.asyncio
-    async def test_rejects_negative_price(self, service: OrderService):
-        """Negative unit price is not allowed."""
-        with pytest.raises(ValueError, match="Unit price must be positive"):
-            await service.place_order(
-                user_id=uuid4(), product_id="prod-1", quantity=1, unit_price=Decimal("-1.00")
-            )
-
-    @pytest.mark.asyncio
-    async def test_raises_when_stock_insufficient(
-        self, service: OrderService, mock_repo: AsyncMock
-    ):
-        """Service checks inventory and raises if stock is too low."""
-        mock_repo.check_stock.return_value = 2  # only 2 available
-
-        with pytest.raises(InsufficientStockError):
-            await service.place_order(
-                user_id=uuid4(), product_id="prod-1", quantity=5, unit_price=Decimal("10.00")
-            )
-
-
-# ---------------------------------------------------------------------------
-# 3. Exception handling
-# ---------------------------------------------------------------------------
-class TestGetOrder:
-
-    @pytest.mark.asyncio
-    async def test_raises_not_found_for_unknown_id(
-        self, service: OrderService, mock_repo: AsyncMock
-    ):
-        """Service wraps the repo's None return into a domain exception."""
-        mock_repo.get_by_id.return_value = None
-
-        with pytest.raises(OrderNotFoundError):
-            await service.get_order(order_id=uuid4())
-
-    @pytest.mark.asyncio
-    async def test_returns_order_when_found(
-        self, service: OrderService, mock_repo: AsyncMock
-    ):
-        """Happy path: repo returns an order, service passes it through."""
-        expected = OrderFactory.build()
-        mock_repo.get_by_id.return_value = expected
-
-        result = await service.get_order(order_id=expected.id)
-
-        assert result.id == expected.id
-        mock_repo.get_by_id.assert_awaited_once_with(expected.id)
-
-
-# ---------------------------------------------------------------------------
-# 4. Parametrized tests — multiple input combinations
-# ---------------------------------------------------------------------------
-class TestDiscountCalculation:
-
-    @pytest.mark.parametrize(
-        "quantity, unit_price, expected_discount_pct",
-        [
-            (1, Decimal("100.00"), Decimal("0")),         # no discount
-            (10, Decimal("100.00"), Decimal("5")),         # 5% bulk discount
-            (50, Decimal("100.00"), Decimal("10")),        # 10% bulk discount
-            (100, Decimal("100.00"), Decimal("15")),       # 15% bulk discount
-        ],
-        ids=["no-discount", "small-bulk", "medium-bulk", "large-bulk"],
+@pytest.fixture
+def existing_user():
+    """A User object representing an existing user in the system."""
+    return User(
+        id=1,
+        email="alice@example.com",
+        display_name="Alice",
+        role="member",
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
-    @pytest.mark.asyncio
-    async def test_bulk_discount_tiers(
-        self,
-        service: OrderService,
-        mock_repo: AsyncMock,
-        quantity: int,
-        unit_price: Decimal,
-        expected_discount_pct: Decimal,
+
+
+# ─── Create User Tests ──────────────────────────────────────────────────────────
+
+class TestCreateUser:
+    """Tests for UserService.create_user()."""
+
+    async def test_create_user_success(self, user_service, mock_user_repo):
+        """Creating a user with a unique email succeeds."""
+        # Arrange: email does not exist yet
+        mock_user_repo.get_by_email.return_value = None
+        mock_user_repo.create.return_value = User(
+            id=1,
+            email="new@example.com",
+            display_name="New User",
+            role="member",
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        # Act
+        result = await user_service.create_user(
+            email="new@example.com",
+            display_name="New User",
+        )
+
+        # Assert
+        assert result.email == "new@example.com"
+        assert result.display_name == "New User"
+        assert result.role == "member"
+        mock_user_repo.create.assert_called_once()
+
+    async def test_create_user_duplicate_email_raises(
+        self, user_service, mock_user_repo, existing_user
     ):
-        """Verify that the correct discount tier is applied based on quantity."""
-        mock_repo.create.return_value = OrderFactory.build(
-            quantity=quantity, unit_price=unit_price
-        )
-        mock_repo.check_stock.return_value = quantity + 100  # plenty of stock
+        """Creating a user with an existing email raises ConflictError."""
+        # Arrange: email already exists
+        mock_user_repo.get_by_email.return_value = existing_user
 
-        result = await service.place_order(
-            user_id=uuid4(), product_id="prod-1", quantity=quantity, unit_price=unit_price
+        # Act & Assert
+        with pytest.raises(ConflictError, match="already exists"):
+            await user_service.create_user(
+                email="alice@example.com",
+                display_name="Duplicate",
+            )
+
+        # Verify we never attempted to create
+        mock_user_repo.create.assert_not_called()
+
+    @pytest.mark.parametrize("role", ["member", "admin", "viewer"])
+    async def test_create_user_with_role(self, user_service, mock_user_repo, role):
+        """Users can be created with any valid role."""
+        mock_user_repo.get_by_email.return_value = None
+        mock_user_repo.create.return_value = User(
+            id=1, email="test@example.com", display_name="Test",
+            role=role, is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
 
-        assert result.discount_pct == expected_discount_pct
+        result = await user_service.create_user(
+            email="test@example.com",
+            display_name="Test",
+            role=role,
+        )
+
+        assert result.role == role
+
+
+# ─── Get User Tests ──────────────────────────────────────────────────────────────
+
+class TestGetUser:
+    """Tests for UserService.get_user()."""
+
+    async def test_get_user_found(self, user_service, mock_user_repo, existing_user):
+        """Returns the user when they exist."""
+        mock_user_repo.get_by_id.return_value = existing_user
+
+        result = await user_service.get_user(user_id=1)
+
+        assert result.id == 1
+        assert result.email == "alice@example.com"
+        mock_user_repo.get_by_id.assert_called_once_with(1)
+
+    async def test_get_user_not_found(self, user_service, mock_user_repo):
+        """Raises NotFoundError when user does not exist."""
+        mock_user_repo.get_by_id.return_value = None
+
+        with pytest.raises(NotFoundError, match="not found"):
+            await user_service.get_user(user_id=999)
+
+
+# ─── Update User Tests ──────────────────────────────────────────────────────────
+
+class TestUpdateUser:
+    """Tests for UserService.update_user()."""
+
+    async def test_update_display_name(
+        self, user_service, mock_user_repo, existing_user
+    ):
+        """Updating display_name succeeds."""
+        mock_user_repo.get_by_id.return_value = existing_user
+        existing_user.display_name = "Updated Alice"
+        mock_user_repo.update.return_value = existing_user
+
+        result = await user_service.update_user(
+            user_id=1, display_name="Updated Alice"
+        )
+
+        assert result.display_name == "Updated Alice"
+
+    async def test_update_nonexistent_user(self, user_service, mock_user_repo):
+        """Updating a non-existent user raises NotFoundError."""
+        mock_user_repo.get_by_id.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await user_service.update_user(user_id=999, display_name="Ghost")
+
+
+# ─── Delete User Tests ──────────────────────────────────────────────────────────
+
+class TestDeleteUser:
+    """Tests for UserService.delete_user()."""
+
+    async def test_delete_user_success(
+        self, user_service, mock_user_repo, existing_user
+    ):
+        """Deleting an existing user succeeds."""
+        mock_user_repo.get_by_id.return_value = existing_user
+
+        await user_service.delete_user(user_id=1)
+
+        mock_user_repo.delete.assert_called_once_with(1)
+
+    async def test_delete_user_not_found(self, user_service, mock_user_repo):
+        """Deleting a non-existent user raises NotFoundError."""
+        mock_user_repo.get_by_id.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await user_service.delete_user(user_id=999)
+
+
+# ─── External Service Mocking ───────────────────────────────────────────────────
+
+class TestUserNotifications:
+    """Tests for notification side effects during user operations."""
+
+    async def test_welcome_email_sent_on_create(self, user_service, mock_user_repo):
+        """A welcome email is sent when a new user is created."""
+        mock_user_repo.get_by_email.return_value = None
+        mock_user_repo.create.return_value = User(
+            id=1, email="new@example.com", display_name="New",
+            role="member", is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        with patch(
+            "app.services.user_service.EmailClient"
+        ) as mock_email_cls:
+            mock_email = mock_email_cls.return_value
+            mock_email.send_welcome = AsyncMock(return_value=True)
+
+            await user_service.create_user(
+                email="new@example.com", display_name="New"
+            )
+
+            mock_email.send_welcome.assert_called_once_with("new@example.com")
+
+    async def test_create_user_succeeds_even_if_email_fails(
+        self, user_service, mock_user_repo
+    ):
+        """User creation should not fail if the welcome email fails."""
+        mock_user_repo.get_by_email.return_value = None
+        mock_user_repo.create.return_value = User(
+            id=1, email="new@example.com", display_name="New",
+            role="member", is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        with patch(
+            "app.services.user_service.EmailClient"
+        ) as mock_email_cls:
+            mock_email = mock_email_cls.return_value
+            mock_email.send_welcome = AsyncMock(
+                side_effect=Exception("SMTP error")
+            )
+
+            # Should NOT raise despite email failure
+            result = await user_service.create_user(
+                email="new@example.com", display_name="New"
+            )
+            assert result.email == "new@example.com"

@@ -1,190 +1,217 @@
 """
-Integration Test Template
-===========================
+integration-test-template.py — Integration test with real database.
 
-Tests the repository and service layers together with a real (test)
-database.  Unlike unit tests, nothing is mocked — the goal is to verify
-that SQL queries, ORM mappings, and transaction behavior work correctly.
+Place at: tests/integration/test_user_integration.py
 
-Fixtures used:
-  db_session  -> transactional AsyncSession (rolls back after each test)
+This template demonstrates:
+  - Full round-trip testing: service -> repository -> database -> assertions
+  - Using a real test database (SQLite in-memory via conftest fixtures)
+  - Testing data persistence, relationships, and query behavior
+  - No mocks -- every layer executes real code
 
-These tests are slower than pure unit tests but catch issues that mocks
-cannot: bad SQL, incorrect column mappings, constraint violations, and
-transaction semantics.
+When to use integration tests vs unit tests:
+  - Unit tests (service-test-template.py): Fast, mock the repo, test business logic.
+  - Integration tests (this file): Slower, real DB, test that layers work together.
+  - Both are needed: unit tests for logic coverage, integration tests for confidence.
 """
 
-from decimal import Decimal
-from uuid import uuid4
-
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.order import Order
-from app.models.user import User
-from app.repositories.order_repository import OrderRepository
-from app.repositories.user_repository import UserRepository
+from app.services.user_service import UserService
 from app.services.order_service import OrderService
-from tests.factories import UserFactory, OrderFactory
+from app.repositories.user_repository import UserRepository
+from app.repositories.order_repository import OrderRepository
+from app.exceptions import NotFoundError, ConflictError
 
 
-# ---------------------------------------------------------------------------
-# Fixtures — wire real repositories and service
-# ---------------------------------------------------------------------------
-@pytest.fixture
-def user_repo(db_session: AsyncSession) -> UserRepository:
-    return UserRepository(session=db_session)
+# ─── Mark the entire module as integration tests ─────────────────────────────────
+pytestmark = [pytest.mark.integration]
 
 
-@pytest.fixture
-def order_repo(db_session: AsyncSession) -> OrderRepository:
-    return OrderRepository(session=db_session)
-
+# ─── Fixtures ────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def order_service(order_repo: OrderRepository) -> OrderService:
-    return OrderService(repository=order_repo)
+def user_repo(db_session: AsyncSession):
+    """Real user repository backed by the test database."""
+    return UserRepository(db_session)
 
 
-# ---------------------------------------------------------------------------
-# 1. Repository — data persistence
-# ---------------------------------------------------------------------------
-class TestOrderRepository:
+@pytest.fixture
+def order_repo(db_session: AsyncSession):
+    """Real order repository backed by the test database."""
+    return OrderRepository(db_session)
 
-    @pytest.mark.asyncio
-    async def test_create_persists_order_to_database(
-        self, order_repo: OrderRepository, db_session: AsyncSession
-    ):
-        """Verify that create() writes a row visible within the same session."""
-        user = UserFactory.build()
-        db_session.add(user)
-        await db_session.flush()
 
-        order = Order(
-            id=uuid4(),
+@pytest.fixture
+def user_service(user_repo):
+    """UserService wired to the real repository."""
+    return UserService(user_repo=user_repo)
+
+
+@pytest.fixture
+def order_service(order_repo, user_repo):
+    """OrderService wired to real repositories."""
+    return OrderService(order_repo=order_repo, user_repo=user_repo)
+
+
+# ─── User CRUD Integration Tests ─────────────────────────────────────────────────
+
+class TestUserCRUDIntegration:
+    """Full round-trip CRUD tests for users with real database."""
+
+    async def test_create_and_retrieve_user(self, user_service):
+        """Create a user and verify it can be retrieved."""
+        # Create
+        created = await user_service.create_user(
+            email="integration@example.com",
+            display_name="Integration User",
+        )
+        assert created.id is not None
+
+        # Retrieve
+        fetched = await user_service.get_user(created.id)
+        assert fetched.email == "integration@example.com"
+        assert fetched.display_name == "Integration User"
+        assert fetched.is_active is True
+
+    async def test_update_user_persists(self, user_service):
+        """Update a user and verify changes are persisted."""
+        # Create
+        user = await user_service.create_user(
+            email="update-test@example.com",
+            display_name="Before Update",
+        )
+
+        # Update
+        updated = await user_service.update_user(
             user_id=user.id,
-            status="pending",
-            quantity=2,
-            unit_price=Decimal("25.00"),
-            total=Decimal("50.00"),
+            display_name="After Update",
         )
-        created = await order_repo.create(order)
+        assert updated.display_name == "After Update"
 
-        # Read back from the session to confirm persistence
-        result = await db_session.execute(
-            select(Order).where(Order.id == created.id)
-        )
-        persisted = result.scalar_one()
-        assert persisted.total == Decimal("50.00")
-        assert persisted.user_id == user.id
+        # Re-fetch to confirm persistence
+        refetched = await user_service.get_user(user.id)
+        assert refetched.display_name == "After Update"
 
-    @pytest.mark.asyncio
-    async def test_get_by_id_returns_none_for_missing_record(
-        self, order_repo: OrderRepository
-    ):
-        """Repository returns None instead of raising when the ID is absent."""
-        result = await order_repo.get_by_id(uuid4())
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_list_by_user_returns_only_that_users_orders(
-        self, order_repo: OrderRepository, db_session: AsyncSession
-    ):
-        """Filtering by user_id must not leak orders from other users."""
-        user_a = UserFactory.build()
-        user_b = UserFactory.build()
-        db_session.add_all([user_a, user_b])
-        await db_session.flush()
-
-        order_a = OrderFactory.build(user=user_a, user_id=user_a.id)
-        order_b = OrderFactory.build(user=user_b, user_id=user_b.id)
-        db_session.add_all([order_a, order_b])
-        await db_session.flush()
-
-        results = await order_repo.list_by_user(user_a.id)
-
-        assert len(results) == 1
-        assert results[0].user_id == user_a.id
-
-
-# ---------------------------------------------------------------------------
-# 2. Service + Repository — end-to-end business logic
-# ---------------------------------------------------------------------------
-class TestOrderServiceIntegration:
-
-    @pytest.mark.asyncio
-    async def test_place_order_writes_correct_total(
-        self, order_service: OrderService, db_session: AsyncSession
-    ):
-        """
-        The service calculates the total and the repository persists it.
-        Verify the computed value survives the round-trip to the database.
-        """
-        user = UserFactory.build()
-        db_session.add(user)
-        await db_session.flush()
-
-        order = await order_service.place_order(
-            user_id=user.id,
-            product_id="prod-42",
-            quantity=4,
-            unit_price=Decimal("12.50"),
+    async def test_delete_user_removes_from_db(self, user_service):
+        """Delete a user and verify they are gone."""
+        user = await user_service.create_user(
+            email="delete-test@example.com",
+            display_name="To Delete",
         )
 
-        # Re-query to confirm the DB holds the correct total
-        result = await db_session.execute(
-            select(Order).where(Order.id == order.id)
+        await user_service.delete_user(user.id)
+
+        with pytest.raises(NotFoundError):
+            await user_service.get_user(user.id)
+
+    async def test_duplicate_email_raises_conflict(self, user_service):
+        """Creating two users with the same email raises ConflictError."""
+        await user_service.create_user(
+            email="unique@example.com",
+            display_name="First",
         )
-        persisted = result.scalar_one()
-        assert persisted.total == Decimal("50.00")
-        assert persisted.status == "pending"
 
-
-# ---------------------------------------------------------------------------
-# 3. Transaction behavior
-# ---------------------------------------------------------------------------
-class TestTransactionBehavior:
-
-    @pytest.mark.asyncio
-    async def test_failed_operation_does_not_leave_partial_data(
-        self, order_service: OrderService, db_session: AsyncSession
-    ):
-        """
-        If the service raises mid-operation, no partial records should
-        remain.  The test session's transaction rollback guarantees this,
-        but we verify it explicitly.
-        """
-        user = UserFactory.build()
-        db_session.add(user)
-        await db_session.flush()
-
-        # Force a failure (negative price triggers ValueError in the service)
-        with pytest.raises(ValueError):
-            await order_service.place_order(
-                user_id=user.id,
-                product_id="prod-99",
-                quantity=1,
-                unit_price=Decimal("-5.00"),
+        with pytest.raises(ConflictError, match="already exists"):
+            await user_service.create_user(
+                email="unique@example.com",
+                display_name="Second",
             )
 
-        # Confirm no order was persisted
-        result = await db_session.execute(
-            select(Order).where(Order.user_id == user.id)
+
+# ─── Relationship Integration Tests ──────────────────────────────────────────────
+
+class TestOrderUserRelationship:
+    """Test that orders and users relate correctly in the database."""
+
+    async def test_create_order_for_user(self, user_service, order_service):
+        """Create an order linked to a real user."""
+        user = await user_service.create_user(
+            email="buyer@example.com",
+            display_name="Buyer",
         )
-        assert result.scalars().all() == []
 
-    @pytest.mark.asyncio
-    async def test_session_isolation_between_tests(
-        self, db_session: AsyncSession
-    ):
-        """
-        Verify that data created in other tests is not visible here.
-        Because each test wraps in a rolled-back transaction, the orders
-        table should be empty at the start of every test.
-        """
-        result = await db_session.execute(select(Order))
-        orders = result.scalars().all()
+        order = await order_service.create_order(
+            user_id=user.id,
+            items=[{"product_name": "Widget", "quantity": 2, "unit_price_cents": 1500}],
+        )
 
-        # If isolation is working, no leftover rows from previous tests
-        assert len(orders) == 0
+        assert order.user_id == user.id
+        assert order.status == "pending"
+        assert order.total_cents == 3000  # 2 * 1500
+
+    async def test_user_orders_list(self, user_service, order_service):
+        """Retrieve all orders belonging to a user."""
+        user = await user_service.create_user(
+            email="multi-order@example.com",
+            display_name="Frequent Buyer",
+        )
+
+        await order_service.create_order(
+            user_id=user.id,
+            items=[{"product_name": "A", "quantity": 1, "unit_price_cents": 100}],
+        )
+        await order_service.create_order(
+            user_id=user.id,
+            items=[{"product_name": "B", "quantity": 1, "unit_price_cents": 200}],
+        )
+
+        orders = await order_service.list_orders_for_user(user.id)
+        assert len(orders) == 2
+
+    async def test_order_for_nonexistent_user_fails(self, order_service):
+        """Creating an order for a user that does not exist raises NotFoundError."""
+        with pytest.raises(NotFoundError, match="not found"):
+            await order_service.create_order(
+                user_id=99999,
+                items=[{"product_name": "X", "quantity": 1, "unit_price_cents": 100}],
+            )
+
+
+# ─── Query and Pagination Integration Tests ──────────────────────────────────────
+
+class TestUserQueryIntegration:
+    """Test query behavior with real data in the database."""
+
+    async def test_list_users_returns_created_users(self, user_service):
+        """List endpoint returns users that were created."""
+        await user_service.create_user(email="list1@example.com", display_name="One")
+        await user_service.create_user(email="list2@example.com", display_name="Two")
+
+        users = await user_service.list_users(limit=10)
+
+        emails = [u.email for u in users]
+        assert "list1@example.com" in emails
+        assert "list2@example.com" in emails
+
+    async def test_list_users_respects_limit(self, user_service):
+        """List endpoint respects the limit parameter."""
+        for i in range(5):
+            await user_service.create_user(
+                email=f"limit{i}@example.com",
+                display_name=f"User {i}",
+            )
+
+        users = await user_service.list_users(limit=2)
+        assert len(users) <= 2
+
+
+# ─── Transaction Isolation Verification ───────────────────────────────────────────
+
+class TestTransactionIsolation:
+    """Verify that test isolation works -- each test starts with a clean state."""
+
+    async def test_first_creates_user(self, user_service):
+        """This test creates a user. The next test should NOT see it."""
+        await user_service.create_user(
+            email="isolation@example.com",
+            display_name="Isolated",
+        )
+        user = await user_service.get_user_by_email("isolation@example.com")
+        assert user is not None
+
+    async def test_second_does_not_see_first(self, user_service):
+        """The user from the previous test should not exist (transaction rolled back)."""
+        with pytest.raises(NotFoundError):
+            await user_service.get_user_by_email("isolation@example.com")

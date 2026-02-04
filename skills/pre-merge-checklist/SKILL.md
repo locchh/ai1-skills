@@ -1,277 +1,288 @@
 ---
 name: pre-merge-checklist
 description: >-
-  Comprehensive pre-merge validation checklist for Python/React pull requests. Use before
-  approving or merging any PR. Covers code quality checks (linting, formatting, type
-  checking), test coverage requirements, documentation updates, migration safety, API
-  contract compatibility, accessibility compliance, bundle size impact, and deployment
-  readiness. Provides a systematic checklist that ensures nothing is missed before merge.
-  Does NOT cover security review depth (use code-review-security).
+  Comprehensive pre-merge validation checklist for Python/React pull requests. Use
+  before approving or merging any PR. Covers code quality checks (linting, formatting,
+  type checking), test coverage requirements, documentation updates, migration safety,
+  API contract compatibility, accessibility compliance, bundle size impact, and
+  deployment readiness. Provides a systematic checklist that ensures nothing is missed
+  before merge. Does NOT cover security review depth (use code-review-security).
 license: MIT
-compatibility: 'Python 3.12+, React 18+, ruff, mypy, eslint, prettier'
+compatibility: 'Python 3.12+, React 18+, ruff, mypy, pytest, TypeScript'
 metadata:
   author: platform-team
   version: '1.0.0'
   sdlc-phase: code-review
-allowed-tools: Read Grep Glob Bash(ruff:*) Bash(mypy:*) Bash(npm:*) Bash(npx:*)
+allowed-tools: Read Grep Glob Bash(pytest:*) Bash(npm:*) Bash(ruff:*) Bash(mypy:*)
 context: fork
 ---
 
 # Pre-Merge Checklist
 
-Systematic pre-merge validation skill for Python (FastAPI) and React pull requests.
-Ensures that every PR meets code quality, test coverage, API compatibility, migration
-safety, accessibility, and deployment readiness standards before it reaches the main
-branch. See `references/checklist-template.md` for a copy-paste ready checklist.
-
-See `scripts/run-all-checks.sh` for automated validation.
-
 ## When to Use
 
-Use this skill when:
+Activate this skill when:
+- Reviewing a pull request before approving
+- Preparing your own PR for merge
+- Verifying that all automated checks pass before merging
+- Auditing a PR that has been approved but not yet merged
+- Running a final validation pass after addressing review feedback
 
-- **Approving or merging any pull request** to the main branch
-- **Validating that CI-equivalent checks pass locally** before pushing
-- **Reviewing a PR as a code reviewer** to ensure nothing is missed
-- **Preparing a release candidate** and confirming all quality gates are met
-
-Do **NOT** use this skill for:
-
-- In-depth security vulnerability review -- use `code-review-security` instead
-- Writing or debugging tests -- use `pytest-patterns`, `react-testing-patterns`, or `e2e-testing` instead
-- Architecture or design decisions -- use `system-architecture` or `api-design-patterns` instead
+Do NOT use this skill for:
+- In-depth security review (use `code-review-security`)
+- Writing implementation code (use `python-backend-expert` or `react-frontend-expert`)
+- Architecture decisions (use `system-architecture`)
+- E2E test creation (use `e2e-testing`)
 
 ## Instructions
 
-### Code Quality Gate
+### Automated Checks (Ordered)
 
-All code must pass linting, formatting, and type checking before merge.
+Run automated checks in this order. Each check must pass before proceeding to the next. Use `scripts/run-all-checks.sh` to execute all checks at once.
 
-#### Python: Linting and Formatting (ruff)
+#### 1. Linting and Formatting
 
+**Python (ruff):**
 ```bash
-ruff check src/ tests/
-ruff format --check src/ tests/
+# Check linting
+ruff check app/ tests/
+
+# Check formatting
+ruff format --check app/ tests/
+
+# Auto-fix (if needed before commit)
+ruff check --fix app/ tests/
+ruff format app/ tests/
 ```
 
-**Standards:** Zero ruff errors on changed files. Import sorting follows the configured `isort` profile. No `# noqa` comments without an explanatory justification.
-
-#### Python: Type Checking (mypy)
-
+**TypeScript/React (eslint + prettier):**
 ```bash
-mypy src/ --strict
+# Check linting
+npx eslint 'src/**/*.{ts,tsx}' --max-warnings 0
+
+# Check formatting
+npx prettier --check 'src/**/*.{ts,tsx}'
+
+# Auto-fix (if needed)
+npx eslint 'src/**/*.{ts,tsx}' --fix
+npx prettier --write 'src/**/*.{ts,tsx}'
 ```
 
-**Standards:** Zero mypy errors in changed files. New code must have complete type annotations. Avoid `Any` types. No `# type: ignore` without justification. See `scripts/type-check.sh` for the combined Python + TypeScript type checking script.
+**Pass criteria:**
+- Zero lint errors (warnings are tolerated only with justification)
+- All files formatted consistently
+- No `# noqa` or `eslint-disable` without a comment explaining why
 
-#### TypeScript: Linting, Formatting, and Types
+#### 2. Type Checking
 
+**Python (mypy):**
 ```bash
-npx eslint src/ --max-warnings 0
-npx prettier --check "src/**/*.{ts,tsx,js,jsx,css,json}"
+mypy app/ --strict --no-error-summary
+```
+
+**TypeScript:**
+```bash
 npx tsc --noEmit
 ```
 
-**Standards:** Zero ESLint errors and warnings. All files Prettier-formatted. Zero TypeScript compiler errors. No `@ts-ignore` or `as any` without justification.
+Use `scripts/type-check.sh` to run both in sequence with report output.
 
-### Test Coverage Gate
+**Pass criteria:**
+- Zero type errors in changed files
+- No new `type: ignore` or `@ts-ignore` without justification
+- Generic types used correctly (no `Any` leaks)
 
-Every PR must maintain or improve test coverage. New code must have tests.
+#### 3. Tests
 
-| Metric | Threshold | Enforcement |
-|--------|-----------|-------------|
-| Overall line coverage (Python) | >= 80% | `pytest --cov-fail-under=80` |
-| Overall line coverage (JS/TS) | >= 80% | Jest `coverageThreshold` |
-| New file coverage | >= 90% | Manual review |
-| Changed lines coverage | >= 85% | Manual review of coverage report |
-
+**Python:**
 ```bash
-pytest --cov=src --cov-report=term-missing --cov-fail-under=80
-npm test -- --coverage --coverageReporters=text
+pytest tests/ -q --tb=short
 ```
 
-**Requirements by PR type:**
-- **New features**: Unit tests for happy path + at least two edge cases. Integration tests for API endpoints.
-- **Bug fixes**: Regression test that fails without the fix and passes with it.
-- **Refactors**: Existing tests still pass. Coverage must not decrease.
-- **Dependency updates**: Existing tests still pass.
-
-**Review questions:** Are tests testing actual behavior or just achieving coverage? Are assertions meaningful? Are edge cases covered? Are tests isolated? Are mocks used appropriately?
-
-### API Contract Check
-
-#### Backward-Compatible Changes (safe)
-
-Adding new endpoints, optional request fields, response fields, query parameters with defaults, or HTTP methods.
-
-#### Breaking Changes (require versioning)
-
-Removing/renaming endpoints or fields, changing field types, making optional fields required, changing success status codes, or changing auth requirements.
-
-**Verification:**
-
+**React:**
 ```bash
-# Generate and diff OpenAPI schema
-python -c "from src.main import app; import json; print(json.dumps(app.openapi(), indent=2))" > /tmp/openapi-new.json
+npm test -- --run --reporter=verbose
 ```
 
-Breaking changes must be versioned (`/api/v2/...`), documented in the changelog, and coordinated with client teams.
+**Pass criteria:**
+- All tests pass (zero failures)
+- No skipped tests without a linked issue/ticket
+- New code has corresponding tests
 
-### Database Migration Check
+#### 4. Coverage
 
-- [ ] Migration is reversible: `downgrade()` function exists and has been tested
-- [ ] No data loss: columns not dropped without data migration first
-- [ ] No long-running locks: index creation uses `CONCURRENTLY` (PostgreSQL)
-- [ ] NOT NULL columns have defaults or use the multi-step pattern (add nullable, backfill, add constraint)
-- [ ] Migration tested on realistic dataset size
-
+**Python:**
 ```bash
-# Dry-run migration
-alembic upgrade head --sql
+pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 ```
 
-**Multi-step pattern for safe column addition:**
-1. PR 1: Add column as nullable
-2. Deploy + backfill: Populate existing rows
-3. PR 2: Add NOT NULL constraint after all rows are populated
-
-### Frontend Quality Check
-
-#### Accessibility (WCAG 2.2)
-
+**React:**
 ```bash
-bash scripts/accessibility-check.sh http://localhost:3000
+npx vitest run --coverage --coverage.thresholds.lines=80
 ```
 
-**Manual checks:** All images have meaningful `alt` text. Form inputs have associated labels. Interactive elements are keyboard accessible. Color contrast meets WCAG AA ratios. ARIA attributes used correctly. Focus management correct for modals.
+**Pass criteria:**
+- Overall coverage >= 80%
+- New code coverage >= 90%
+- No critical paths left uncovered (auth, payment, data mutation)
 
-#### Bundle Size Impact
+#### 5. Security Scan
 
 ```bash
-npm run build
-npx size-limit  # if configured
+# Python dependencies
+pip-audit --requirement requirements.txt
+
+# npm dependencies
+npm audit --audit-level=high
+
+# Custom code scan (if code-review-security skill is available)
+python scripts/security-scan.py --path app/ --output-dir ./security-results
 ```
 
-**Thresholds:** Main JS bundle: warn at 250KB gzipped, block at 500KB. Single chunk: warn at 100KB gzipped. If size increases significantly, evaluate whether the dependency is justified, code splitting is applied, and tree-shaking works correctly.
+**Pass criteria:**
+- No critical or high severity vulnerability in dependencies
+- No critical findings in code scan
+- All new endpoints have authentication checks
 
-#### Responsive Design
+---
 
-Test at mobile (375px), tablet (768px), and desktop (1280px). No horizontal scrollbar. Touch targets >= 44x44px on mobile.
+### Manual Review Checklist
 
-### Documentation Check
+After automated checks pass, review the PR manually against these categories.
 
-- [ ] New endpoints documented in OpenAPI schema with descriptions and examples
-- [ ] Error responses documented (status codes, message format)
-- [ ] New environment variables documented (name, purpose, example value)
-- [ ] README updated if development workflow changes
-- [ ] Changelog entry added for user-facing changes; breaking changes prominently marked
+#### Code Quality
 
-### Deployment Readiness
+- [ ] **Naming:** Variables, functions, and classes have clear, descriptive names
+- [ ] **Functions:** Each function does one thing; no function exceeds 50 lines
+- [ ] **DRY:** No duplicated logic that should be extracted into a shared function
+- [ ] **Comments:** Complex logic is documented; no commented-out code left in
+- [ ] **Imports:** No unused imports; imports are organized (stdlib, third-party, local)
+- [ ] **Constants:** No magic numbers or strings; use named constants or enums
+- [ ] **Logging:** New features have appropriate log statements at correct levels
 
-**Environment Variables:**
-- [ ] New env vars documented and added to all deployment environments (or have safe defaults)
-- [ ] No env var removed without confirming it is unused everywhere
+#### Testing
 
-**Feature Flags:**
-- [ ] Large or risky features behind a feature flag (defaults to off in production)
-- [ ] Flag has clear naming convention and documented purpose
+- [ ] **Coverage:** New code has tests (unit and/or integration as appropriate)
+- [ ] **Edge cases:** Tests cover happy path, error paths, and boundary conditions
+- [ ] **Test names:** Test names describe the scenario and expected outcome
+- [ ] **Test isolation:** Tests do not depend on each other or on execution order
+- [ ] **No flakiness:** Tests do not use hardcoded delays or environment-specific paths
+- [ ] **Factories:** Test data uses factories, not hardcoded fixtures
 
-**Rollback Plan:**
-- [ ] Change can be rolled back by reverting merge commit
-- [ ] Database migrations are reversible (if applicable)
-- [ ] If not rollback-safe, PR documents the forward-fix strategy
+#### Type Safety
 
-**CI/CD:**
-- [ ] All CI checks pass (no flaky test failures)
-- [ ] Build artifacts produced successfully
+- [ ] **No `Any`:** Return types and parameters are properly typed (no escape hatches)
+- [ ] **Null safety:** Optional values are handled (null checks, default values)
+- [ ] **Schema validation:** API inputs use Pydantic schemas (Python) or Zod (React)
+- [ ] **Generic types:** Collections use proper generics (`list[User]`, not `list`)
+
+#### Error Handling
+
+- [ ] **Graceful errors:** All error paths return meaningful messages
+- [ ] **HTTP status codes:** Correct codes used (404 for not found, 409 for conflict, etc.)
+- [ ] **Error boundaries:** React components have error boundaries for async failures
+- [ ] **Retry logic:** External service calls have retry with backoff (where appropriate)
+- [ ] **No silent failures:** Caught exceptions are logged, not silently swallowed
+
+#### Backwards Compatibility
+
+- [ ] **API contracts:** No breaking changes to existing API response shapes
+- [ ] **Database migrations:** Migrations are reversible and non-destructive
+- [ ] **Feature flags:** Breaking changes are behind feature flags
+- [ ] **Deprecation:** Removed features have deprecation warnings in prior release
+- [ ] **Configuration:** No new required environment variables without documentation
+
+#### Documentation
+
+- [ ] **API docs:** New endpoints are documented (OpenAPI/Swagger via FastAPI)
+- [ ] **README:** Setup instructions updated if new dependencies or steps added
+- [ ] **Migration notes:** Database migration has a description comment
+- [ ] **ADR:** Significant architectural decisions documented (if applicable)
+
+#### Performance
+
+- [ ] **N+1 queries:** No N+1 database query patterns (use eager loading)
+- [ ] **Pagination:** List endpoints use cursor-based pagination
+- [ ] **Indexes:** New query patterns have supporting database indexes
+- [ ] **Bundle size:** No unnecessary large dependencies added to frontend
+
+#### Accessibility
+
+- [ ] **Semantic HTML:** Correct HTML elements used (button, nav, main, etc.)
+- [ ] **ARIA labels:** Interactive elements have accessible labels
+- [ ] **Keyboard navigation:** New UI elements are keyboard-accessible
+- [ ] **Color contrast:** Text meets WCAG 2.1 AA contrast requirements
+
+Use `scripts/accessibility-check.sh` to run automated accessibility checks.
+
+---
+
+### Failure Protocol
+
+When a check fails, follow this escalation path:
+
+**Automated check failure:**
+1. Fix the issue in the PR
+2. Push the fix and re-run checks
+3. Do not merge until all automated checks pass
+
+**Manual review finding:**
+1. Add a review comment with the finding
+2. Request changes on the PR
+3. Re-review after the author addresses feedback
+
+**Severity-based response:**
+
+| Finding Type | Action | Can Override? |
+|---|---|---|
+| Lint/format error | Fix before merge | No |
+| Type error | Fix before merge | No |
+| Test failure | Fix before merge | No |
+| Coverage below threshold | Add tests or justify | Yes, with tech lead approval |
+| Security finding (critical/high) | Fix before merge | No |
+| Security finding (medium/low) | Fix or create follow-up ticket | Yes, with ticket reference |
+| Accessibility violation | Fix or create follow-up ticket | Yes, with justification |
+| Performance concern | Discuss in PR, may defer | Yes, with tech lead approval |
+
+### Override Process
+
+If a check must be overridden:
+
+1. **Document the reason** in a PR comment explaining why the override is acceptable
+2. **Get explicit approval** from a tech lead or senior engineer
+3. **Create a follow-up ticket** to resolve the underlying issue
+4. **Add a code comment** at the override point referencing the ticket
+
+```python
+# OVERRIDE: Coverage below 80% for this module. See TICKET-1234.
+# Approved by @tech-lead on 2024-01-15.
+# Reason: Legacy code migration in progress; full coverage planned for Sprint 12.
+```
+
+Overrides are never acceptable for:
+- Critical security vulnerabilities
+- Broken tests
+- Type errors that mask bugs
 
 ## Examples
 
-### Complete Checklist Walkthrough for a Sample PR
-
-**PR #315: Add Password Reset Flow** -- 3 new API endpoints, 2 React pages, 1 migration, 1 email template.
-
-```markdown
-## Pre-Merge Checklist: PR #315
-
-### Code Quality
-- [x] `ruff check` and `ruff format --check` pass
-- [x] `mypy src/ --strict` passes (new functions fully typed)
-- [x] `npx eslint` and `npx prettier --check` pass
-- [x] `npx tsc --noEmit` passes
-
-### Test Coverage
-- [x] Python coverage: 84% (above 80% threshold)
-- [x] New endpoint tests: 94% coverage on new files
-- [x] Regression test for expired token edge case
-
-### API Contract
-- [x] 3 new endpoints (no existing modified) -- backward compatible
-- [x] OpenAPI schema updated with descriptions and examples
-
-### Database Migration
-- [x] Adds `password_reset_tokens` table (new table, no risk)
-- [x] Downgrade drops table (reversible). Index on `token` column.
-
-### Frontend Quality
-- [x] Accessibility: labels, keyboard nav, error announcements
-- [x] Bundle impact: +2.1KB gzipped. Responsive at all breakpoints.
-
-### Documentation
-- [x] New env vars `SMTP_HOST`, `SMTP_FROM` documented in README
-- [x] Changelog entry under "Added"
-
-### Deployment Readiness
-- [x] Env vars added to staging/production
-- [x] Feature flag `enable_password_reset` defaults to off
-- [x] Rollback: revert merge commit (migration safe to leave)
-- [x] All CI checks pass
-
-### Verdict: APPROVED
-```
-
-### Running All Checks Locally
+### Running All Checks
 
 ```bash
-bash scripts/run-all-checks.sh
+# Run the full check suite
+./scripts/run-all-checks.sh --output-dir ./check-results
 
-# Or run individually
-bash scripts/type-check.sh
-bash scripts/accessibility-check.sh http://localhost:3000
-ruff check src/ tests/
-pytest --cov=src --cov-fail-under=80
+# Run only type checks
+./scripts/type-check.sh --output-dir ./check-results
+
+# Run accessibility checks
+./scripts/accessibility-check.sh --output-dir ./check-results
 ```
 
-## Edge Cases
+### Quick PR Review Workflow
 
-### Hotfix PRs
-
-For urgent production fixes (P1/P2 incidents), a reduced checklist applies.
-
-**Required (cannot skip):** Linting and type checks pass. Regression test included. CI passes. Rollback plan documented.
-
-**Can defer to follow-up PR (within 48 hours):** Full test coverage improvements. Documentation updates. Accessibility checks (backend-only fixes). Bundle size analysis. Changelog entry.
-
-**Process:** Create hotfix PR with reduced checklist. Merge after one reviewer approves. Immediately create a follow-up ticket for deferred items.
-
-### Dependency-Only PRs
-
-**Required:** All existing tests pass. No new security vulnerabilities (`safety check`, `npm audit`). Lock file updated. Major version bumps reviewed for breaking changes.
-
-**Not required:** New tests (unless behavior changes). Documentation updates. API contract check.
-
-### Migration-Only PRs
-
-**Required:** Migration reversible and tested. No data loss risk. No long-running locks. Dry-run succeeds. If dropping a column, verify no code references it.
-
-**Not required:** Test coverage (no application code changed). Frontend quality checks.
-
-### Large PRs (20+ Changed Files)
-
-1. Ask if the PR can be split into independent changes.
-2. Prioritize review of high-risk files (auth, database, API, payment logic).
-3. Run the full automated suite (`scripts/run-all-checks.sh`).
-4. Verify test suite is proportionally comprehensive.
-5. Check for accidental inclusions: debug code, TODO comments, unrelated changes.
-
-See `references/checklist-template.md` for a copy-paste ready checklist.
+1. Pull the branch locally
+2. Run `./scripts/run-all-checks.sh --output-dir ./pr-review`
+3. Review the automated results file
+4. Walk through the manual checklist above
+5. Leave review comments or approve

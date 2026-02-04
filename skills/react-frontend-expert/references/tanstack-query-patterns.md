@@ -1,237 +1,317 @@
-# TanStack Query v5 Patterns
+# TanStack Query Patterns
 
-## 1. Query Key Factory Pattern
+CRUD operation patterns, query key conventions, cache invalidation, and optimistic updates for TanStack Query v5 with React.
 
-Centralize query keys in a factory object. This prevents key typos, makes
-invalidation predictable, and provides autocompletion.
+---
+
+## Query Key Conventions
+
+Structure query keys hierarchically for targeted invalidation:
 
 ```tsx
-// src/queries/userKeys.ts
+// All users (list)
+["users"]
 
-export const userKeys = {
-  all:     ["users"] as const,
-  lists:   () => [...userKeys.all, "list"] as const,
-  list:    (filters: { page: number; search?: string }) =>
-             [...userKeys.lists(), filters] as const,
-  details: () => [...userKeys.all, "detail"] as const,
-  detail:  (id: string) => [...userKeys.details(), id] as const,
+// Single user
+["users", userId]
+
+// Filtered user list
+["users", { q: "search", role: "admin", page: 1 }]
+
+// User's posts (nested resource)
+["users", userId, "posts"]
+
+// Single post
+["posts", postId]
+```
+
+**Rules:**
+- First element is the resource name (string)
+- Subsequent elements narrow the scope (ids, filters)
+- Object filters should be normalized (same key order)
+- Use `queryOptions()` factory to prevent key duplication
+
+---
+
+## Query Options Factory
+
+Centralize all query definitions per resource:
+
+```tsx
+// api/users.ts
+import { queryOptions } from "@tanstack/react-query";
+import { apiClient } from "./client";
+import type { User, UserListResponse } from "@/types/user";
+
+interface UserListParams {
+  q?: string;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export const userQueries = {
+  all: () =>
+    queryOptions({
+      queryKey: ["users"] as const,
+      queryFn: () => apiClient.get<UserListResponse>("/users"),
+      staleTime: 5 * 60 * 1000, // 5 minutes
+    }),
+
+  list: (params: UserListParams) =>
+    queryOptions({
+      queryKey: ["users", params] as const,
+      queryFn: () =>
+        apiClient.get<UserListResponse>("/users", { params }),
+      staleTime: 2 * 60 * 1000,
+    }),
+
+  detail: (userId: number) =>
+    queryOptions({
+      queryKey: ["users", userId] as const,
+      queryFn: () => apiClient.get<User>(`/users/${userId}`),
+      staleTime: 5 * 60 * 1000,
+    }),
 };
-
-// Usage in hooks:
-// queryKey: userKeys.list({ page: 1, search: "alice" })
-// queryKey: userKeys.detail("user-123")
-
-// Invalidation (all user lists, regardless of filters):
-// queryClient.invalidateQueries({ queryKey: userKeys.lists() })
-
-// Invalidation (everything user-related):
-// queryClient.invalidateQueries({ queryKey: userKeys.all })
 ```
 
-## 2. Prefetching Patterns
-
-Prefetch data before the user navigates to avoid loading spinners on the next page.
-
+**Usage in components:**
 ```tsx
-// Prefetch on hover (link or button)
-function UserListItem({ userId, name }: { userId: string; name: string }) {
-  const queryClient = useQueryClient();
-
-  const prefetchUser = () => {
-    queryClient.prefetchQuery({
-      queryKey: userKeys.detail(userId),
-      queryFn: () => fetchUser(userId),
-      staleTime: 60_000, // Only prefetch if data is older than 1 minute
-    });
-  };
-
-  return (
-    <Link
-      to={`/users/${userId}`}
-      onMouseEnter={prefetchUser}
-      onFocus={prefetchUser}
-    >
-      {name}
-    </Link>
-  );
-}
-
-// Prefetch in a route loader (React Router 6+)
-export function usersPageLoader(queryClient: QueryClient) {
-  return async () => {
-    await queryClient.ensureQueryData({
-      queryKey: userKeys.list({ page: 1 }),
-      queryFn: () => fetchUsers({ page: 1 }),
-    });
-    return null;
-  };
-}
+// Clean and type-safe — no key duplication
+const { data } = useQuery(userQueries.detail(42));
+const { data } = useQuery(userQueries.list({ q: search }));
 ```
 
-## 3. Infinite Query Pattern
+---
 
-Implement cursor-based or offset-based pagination with "Load More" or infinite scroll.
+## CRUD Operations
 
-```tsx
-import { useInfiniteQuery } from "@tanstack/react-query";
-
-interface PageResponse<T> {
-  items: T[];
-  nextCursor: string | null;
-}
-
-export function useInfiniteUsers(search?: string) {
-  return useInfiniteQuery({
-    queryKey: userKeys.list({ page: -1, search }), // -1 signals infinite mode
-    queryFn: async ({ pageParam }): Promise<PageResponse<User>> => {
-      const params = new URLSearchParams();
-      if (pageParam) params.set("cursor", pageParam);
-      if (search) params.set("search", search);
-      params.set("limit", "20");
-
-      const res = await fetch(`/api/users?${params}`);
-      if (!res.ok) throw new Error("Failed to fetch users");
-      return res.json();
-    },
-    initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) => lastPage.nextCursor,
-  });
-}
-
-// In the component:
-// const { data, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteUsers();
-// const allUsers = data?.pages.flatMap((page) => page.items) ?? [];
-```
-
-## 4. Dependent Queries
-
-When one query depends on the result of another, use the `enabled` option to prevent
-the dependent query from running until its prerequisite resolves.
-
-```tsx
-export function useUserProjects(userId?: string) {
-  // First query: fetch user to get their organization ID
-  const userQuery = useQuery({
-    queryKey: userKeys.detail(userId!),
-    queryFn: () => fetchUser(userId!),
-    enabled: !!userId,
-  });
-
-  // Second query: depends on the user's org ID
-  const projectsQuery = useQuery({
-    queryKey: ["projects", { orgId: userQuery.data?.orgId }],
-    queryFn: () => fetchProjects(userQuery.data!.orgId),
-    enabled: !!userQuery.data?.orgId,
-  });
-
-  return {
-    user: userQuery.data,
-    projects: projectsQuery.data,
-    isLoading: userQuery.isLoading || projectsQuery.isLoading,
-    isError: userQuery.isError || projectsQuery.isError,
-  };
-}
-```
-
-## 5. Query Invalidation Strategies
-
-Choose the right invalidation strategy based on the mutation's effect.
+### Create (useMutation + invalidate)
 
 ```tsx
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiClient } from "@/api/client";
+import type { UserCreate, User } from "@/types/user";
 
+export function useCreateUser() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: UserCreate) =>
+      apiClient.post<User>("/users", data),
+
+    onSuccess: () => {
+      // Invalidate all user lists — they're now stale
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+    },
+  });
+}
+
+// Usage in component
+function CreateUserButton() {
+  const createUser = useCreateUser();
+
+  const handleClick = () => {
+    createUser.mutate(
+      { email: "new@example.com", displayName: "New User" },
+      {
+        onSuccess: (user) => {
+          toast.success(`Created ${user.displayName}`);
+        },
+        onError: (error) => {
+          toast.error(error.message);
+        },
+      },
+    );
+  };
+
+  return (
+    <button onClick={handleClick} disabled={createUser.isPending}>
+      {createUser.isPending ? "Creating..." : "Create User"}
+    </button>
+  );
+}
+```
+
+### Update (useMutation + invalidate specific)
+
+```tsx
+export function useUpdateUser(userId: number) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: UserPatch) =>
+      apiClient.patch<User>(`/users/${userId}`, data),
+
+    onSuccess: (updatedUser) => {
+      // Update the specific user in cache
+      queryClient.setQueryData(["users", userId], updatedUser);
+      // Invalidate lists (they may be sorted/filtered differently)
+      queryClient.invalidateQueries({ queryKey: ["users"], exact: false });
+    },
+  });
+}
+```
+
+### Delete (useMutation + remove from cache)
+
+```tsx
 export function useDeleteUser() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (userId: string) => deleteUser(userId),
-    onSuccess: (_data, userId) => {
-      // Strategy 1: Invalidate — refetch from server (most common)
-      queryClient.invalidateQueries({ queryKey: userKeys.lists() });
+    mutationFn: (userId: number) =>
+      apiClient.delete(`/users/${userId}`),
 
-      // Strategy 2: Remove — delete from cache immediately (detail page)
-      queryClient.removeQueries({ queryKey: userKeys.detail(userId) });
-
-      // Strategy 3: Manual update — modify cache without refetch
-      // queryClient.setQueryData(userKeys.list({ page: 1 }), (old) => ({
-      //   ...old,
-      //   users: old.users.filter((u) => u.id !== userId),
-      // }));
+    onSuccess: (_, userId) => {
+      // Remove from cache
+      queryClient.removeQueries({ queryKey: ["users", userId] });
+      // Invalidate lists
+      queryClient.invalidateQueries({ queryKey: ["users"] });
     },
   });
 }
 ```
 
-**When to use each:**
+---
 
-| Strategy           | Use When                                          |
-|--------------------|---------------------------------------------------|
-| `invalidateQueries` | Default. Server is source of truth.              |
-| `removeQueries`    | The entity no longer exists (delete).             |
-| `setQueryData`     | You have the complete new data (optimistic update). |
-| `cancelQueries`    | Before an optimistic update, cancel in-flight fetches. |
+## Optimistic Updates
 
-## 6. Optimistic Update Complete Example
-
-Show the update immediately in the UI, roll back on error, and refetch to reconcile.
+Update the UI immediately, rollback on error:
 
 ```tsx
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-
-interface UpdateUserInput {
-  id: string;
-  name: string;
-  email: string;
-}
-
-export function useUpdateUser() {
+export function useToggleFavorite(postId: number) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: UpdateUserInput) => updateUser(input),
+    mutationFn: () => apiClient.post(`/posts/${postId}/favorite`),
 
-    onMutate: async (input) => {
-      // 1. Cancel in-flight fetches so they do not overwrite our optimistic update
-      await queryClient.cancelQueries({ queryKey: userKeys.detail(input.id) });
+    onMutate: async () => {
+      // Cancel outgoing queries to prevent race conditions
+      await queryClient.cancelQueries({ queryKey: ["posts", postId] });
 
-      // 2. Snapshot current cache for rollback
-      const previousUser = queryClient.getQueryData<User>(
-        userKeys.detail(input.id),
+      // Snapshot current state for rollback
+      const previousPost = queryClient.getQueryData<Post>(["posts", postId]);
+
+      // Optimistically update
+      queryClient.setQueryData<Post>(["posts", postId], (old) =>
+        old ? { ...old, isFavorited: !old.isFavorited } : old,
       );
 
-      // 3. Optimistically update the cache
-      queryClient.setQueryData<User>(userKeys.detail(input.id), (old) =>
-        old ? { ...old, name: input.name, email: input.email } : old,
-      );
-
-      // 4. Return snapshot for rollback in onError
-      return { previousUser };
+      return { previousPost };
     },
 
-    onError: (_error, input, context) => {
-      // 5. Roll back to the previous value
-      if (context?.previousUser) {
-        queryClient.setQueryData(
-          userKeys.detail(input.id),
-          context.previousUser,
-        );
+    onError: (_err, _vars, context) => {
+      // Rollback on error
+      if (context?.previousPost) {
+        queryClient.setQueryData(["posts", postId], context.previousPost);
       }
     },
 
-    onSettled: (_data, _error, input) => {
-      // 6. Always refetch to reconcile with server state
-      queryClient.invalidateQueries({ queryKey: userKeys.detail(input.id) });
-      queryClient.invalidateQueries({ queryKey: userKeys.lists() });
+    onSettled: () => {
+      // Always refetch to sync with server
+      queryClient.invalidateQueries({ queryKey: ["posts", postId] });
     },
   });
 }
 ```
 
-**Optimistic update checklist:**
+---
 
-1. `cancelQueries` to prevent in-flight fetches from overwriting.
-2. Snapshot the current cache value.
-3. Apply the optimistic update with `setQueryData`.
-4. Return the snapshot from `onMutate` so `onError` can access it.
-5. Roll back in `onError` using the snapshot.
-6. Invalidate in `onSettled` (runs on both success and error) to reconcile.
+## Infinite Scroll
+
+```tsx
+import { useInfiniteQuery } from "@tanstack/react-query";
+
+export function useInfinitePosts() {
+  return useInfiniteQuery({
+    queryKey: ["posts", "infinite"],
+    queryFn: ({ pageParam }) =>
+      apiClient.get<PostListResponse>("/posts", {
+        params: { cursor: pageParam, limit: 20 },
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) =>
+      lastPage.hasMore ? lastPage.nextCursor : undefined,
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
+// Usage
+function PostFeed() {
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useInfinitePosts();
+
+  const allPosts = data?.pages.flatMap((page) => page.items) ?? [];
+
+  return (
+    <div>
+      {allPosts.map((post) => (
+        <PostCard key={post.id} post={post} />
+      ))}
+      {hasNextPage && (
+        <button onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+          {isFetchingNextPage ? "Loading..." : "Load More"}
+        </button>
+      )}
+    </div>
+  );
+}
+```
+
+---
+
+## Dependent Queries
+
+Query that depends on another query's result:
+
+```tsx
+function UserPosts({ userId }: { userId: number }) {
+  // First query: get user
+  const { data: user } = useQuery(userQueries.detail(userId));
+
+  // Second query: depends on user data
+  const { data: posts } = useQuery({
+    queryKey: ["users", userId, "posts", user?.preferredCategory],
+    queryFn: () =>
+      apiClient.get(`/users/${userId}/posts`, {
+        params: { category: user!.preferredCategory },
+      }),
+    enabled: !!user, // Only run when user data is available
+  });
+
+  // ...
+}
+```
+
+---
+
+## Global Configuration
+
+```tsx
+// main.tsx
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000,    // 5 minutes (avoid staleTime: 0)
+      gcTime: 10 * 60 * 1000,       // 10 minutes garbage collection
+      retry: 1,                      // Retry once on failure
+      refetchOnWindowFocus: false,   // Disable aggressive refetching
+    },
+    mutations: {
+      retry: 0,                      // No retry for mutations
+    },
+  },
+});
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <Router />
+      <ReactQueryDevtools initialIsOpen={false} />
+    </QueryClientProvider>
+  );
+}
+```

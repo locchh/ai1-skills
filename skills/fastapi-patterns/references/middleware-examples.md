@@ -1,375 +1,243 @@
-# FastAPI Middleware Examples
+# Middleware Examples
 
-## Overview
-
-Middleware in FastAPI wraps every request/response cycle. Each middleware can
-inspect or modify the request before it reaches the route handler and the
-response before it is sent to the client. Middleware is executed in the order it
-is added (outermost first for requests, innermost first for responses).
+Complete middleware implementations for FastAPI applications.
 
 ---
 
 ## 1. Request Logging Middleware
 
-Logs the HTTP method, path, status code, and duration of every request. This is
-the single most useful middleware for production observability.
+Logs every request with method, path, status code, and duration.
 
 ```python
 import time
 import logging
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger("api.access")
 
 
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Log method, path, status code, and wall-clock duration for every request."""
+class RequestLoggingMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         start = time.perf_counter()
-        response: Response = await call_next(request)
-        duration_ms = (time.perf_counter() - start) * 1000
+        status_code = 500  # Default if response fails
 
-        logger.info(
-            "%s %s -> %d (%.1fms)",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status": response.status_code,
-                "duration_ms": round(duration_ms, 1),
-                "client_ip": request.client.host if request.client else "unknown",
-            },
-        )
-        return response
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            duration = time.perf_counter() - start
+            method = scope.get("method", "?")
+            path = scope.get("path", "?")
+            logger.info(
+                "request completed",
+                extra={
+                    "method": method,
+                    "path": path,
+                    "status_code": status_code,
+                    "duration_ms": round(duration * 1000, 2),
+                },
+            )
 ```
-
-### Usage
-
-```python
-from fastapi import FastAPI
-
-app = FastAPI()
-app.add_middleware(RequestLoggingMiddleware)
-```
-
-### Notes
-- Use `time.perf_counter()` instead of `time.time()` for monotonic precision.
-- The `extra` dict makes structured logging possible with JSON formatters.
-- Place this middleware outermost so it captures the full request lifecycle.
 
 ---
 
-## 2. Request Timing Middleware
+## 2. Request ID Middleware
 
-Adds an `X-Process-Time` header to every response so clients and load balancers
-can observe backend latency.
+Assigns a unique ID to each request for tracing.
 
 ```python
-import time
+import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
 
-class TimingMiddleware(BaseHTTPMiddleware):
-    """Attach X-Process-Time header (seconds) to every response."""
-
+class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
-        start = time.perf_counter()
-        response: Response = await call_next(request)
-        elapsed = time.perf_counter() - start
-        response.headers["X-Process-Time"] = f"{elapsed:.4f}"
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request.state.request_id = request_id
+
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
         return response
 ```
 
-### Usage
-
-```python
-app.add_middleware(TimingMiddleware)
-```
-
-### Notes
-- The value is in seconds with four decimal places (e.g., `0.0342`).
-- Lightweight enough for every environment including production.
-- If you already have the logging middleware above, you may combine them into
-  one middleware to avoid double timing.
-
 ---
 
-## 3. CORS Middleware (Proper Configuration)
+## 3. Rate Limiting Middleware
 
-The built-in `CORSMiddleware` from Starlette is the correct way to handle CORS.
-Never use `allow_origins=["*"]` in production -- always enumerate trusted
-origins.
-
-```python
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI()
-
-# Enumerate every allowed origin explicitly
-ALLOWED_ORIGINS = [
-    "https://app.example.com",
-    "https://staging.example.com",
-    "http://localhost:3000",  # Local frontend dev server
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
-    expose_headers=["X-Process-Time", "X-Request-ID"],
-    max_age=600,  # Cache preflight response for 10 minutes
-)
-```
-
-### Dynamic Origin Validation
-
-If origins are loaded from a database or environment variable at runtime:
-
-```python
-import os
-
-def get_allowed_origins() -> list[str]:
-    """Read allowed origins from environment, comma-separated."""
-    raw = os.environ.get("CORS_ORIGINS", "")
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_allowed_origins(),
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
-)
-```
-
-### Notes
-- `allow_credentials=True` and `allow_origins=["*"]` are mutually exclusive
-  per the CORS spec. Starlette will not send the correct headers.
-- `max_age` controls how long the browser caches the preflight response.
-  Higher values reduce OPTIONS requests but delay origin policy changes.
-- `expose_headers` determines which response headers JavaScript can read.
-
----
-
-## 4. Rate Limiting Middleware (Per-IP, Sliding Window)
-
-A simple in-memory sliding-window rate limiter. For production, replace the
-in-memory dict with Redis for multi-process/multi-node support.
+Token bucket rate limiter with per-IP tracking.
 
 ```python
 import time
 from collections import defaultdict
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.responses import JSONResponse
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """
-    Per-IP sliding window rate limiter.
+class RateLimitMiddleware:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        requests_per_minute: int = 60,
+    ) -> None:
+        self.app = app
+        self.rate = requests_per_minute
+        self.window = 60.0
+        self.buckets: dict[str, list[float]] = defaultdict(list)
 
-    Args:
-        app: The ASGI application.
-        max_requests: Maximum requests allowed within the window.
-        window_seconds: Length of the sliding window in seconds.
-    """
+    def _get_client_ip(self, scope: Scope) -> str:
+        # Check for proxy headers
+        headers = dict(scope.get("headers", []))
+        forwarded = headers.get(b"x-forwarded-for", b"").decode()
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        client = scope.get("client")
+        return client[0] if client else "unknown"
 
-    def __init__(self, app, max_requests: int = 100, window_seconds: int = 60):
-        super().__init__(app)
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-        # Map of IP -> list of request timestamps
-        self._requests: dict[str, list[float]] = defaultdict(list)
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-    def _clean_old_requests(self, ip: str, now: float) -> None:
-        """Remove timestamps outside the current window."""
-        cutoff = now - self.window_seconds
-        self._requests[ip] = [
-            ts for ts in self._requests[ip] if ts > cutoff
-        ]
-
-    async def dispatch(self, request: Request, call_next) -> Response:
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = self._get_client_ip(scope)
         now = time.time()
 
-        self._clean_old_requests(client_ip, now)
+        # Clean old entries
+        self.buckets[client_ip] = [
+            t for t in self.buckets[client_ip] if now - t < self.window
+        ]
 
-        if len(self._requests[client_ip]) >= self.max_requests:
-            retry_after = int(
-                self.window_seconds
-                - (now - self._requests[client_ip][0])
-            )
-            return JSONResponse(
+        if len(self.buckets[client_ip]) >= self.rate:
+            response = JSONResponse(
                 status_code=429,
-                content={
-                    "error": "rate_limit_exceeded",
-                    "message": f"Too many requests. Retry after {retry_after}s.",
-                    "retry_after": retry_after,
+                content={"detail": "Rate limit exceeded", "code": "RATE_LIMITED"},
+                headers={
+                    "Retry-After": str(int(self.window)),
+                    "X-RateLimit-Limit": str(self.rate),
+                    "X-RateLimit-Remaining": "0",
                 },
-                headers={"Retry-After": str(max(retry_after, 1))},
             )
+            await response(scope, receive, send)
+            return
 
-        self._requests[client_ip].append(now)
-
-        response = await call_next(request)
-        remaining = self.max_requests - len(self._requests[client_ip])
-        response.headers["X-RateLimit-Limit"] = str(self.max_requests)
-        response.headers["X-RateLimit-Remaining"] = str(remaining)
-        response.headers["X-RateLimit-Window"] = str(self.window_seconds)
-        return response
+        self.buckets[client_ip].append(now)
+        await self.app(scope, receive, send)
 ```
-
-### Usage
-
-```python
-app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60)
-```
-
-### Notes
-- This implementation is single-process only. For production with multiple
-  workers or nodes, use Redis with a sorted set per IP.
-- The `Retry-After` header tells well-behaved clients how long to wait.
-- Consider exempting health-check endpoints from rate limiting.
-- For per-user (authenticated) rate limiting, extract the user ID from the JWT
-  instead of using the client IP.
 
 ---
 
-## 5. Error Handling Middleware
+## 4. Error Handling Middleware
 
-Catches all unhandled exceptions and returns a consistent JSON error response
-instead of leaking stack traces to clients.
+Catches unhandled exceptions and returns consistent error responses.
 
 ```python
 import logging
 import traceback
-import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 
 logger = logging.getLogger("api.errors")
 
 
 class ErrorHandlingMiddleware(BaseHTTPMiddleware):
-    """
-    Catch unhandled exceptions, log them with a correlation ID,
-    and return a safe JSON error response.
-    """
-
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(self, request: Request, call_next):
         try:
-            response = await call_next(request)
-            return response
+            return await call_next(request)
         except Exception as exc:
-            error_id = str(uuid.uuid4())
-
-            logger.exception(
-                "Unhandled exception [error_id=%s] %s %s: %s",
-                error_id,
-                request.method,
-                request.url.path,
-                str(exc),
+            logger.error(
+                "Unhandled exception",
                 extra={
-                    "error_id": error_id,
-                    "method": request.method,
                     "path": request.url.path,
+                    "method": request.method,
+                    "error": str(exc),
                     "traceback": traceback.format_exc(),
                 },
             )
-
             return JSONResponse(
                 status_code=500,
                 content={
-                    "error": "internal_server_error",
-                    "message": "An unexpected error occurred.",
-                    "error_id": error_id,
+                    "detail": "Internal server error",
+                    "code": "INTERNAL_ERROR",
                 },
             )
 ```
 
-### Usage
+---
+
+## 5. CORS Configuration Examples
+
+### Development (Permissive)
 
 ```python
-app.add_middleware(ErrorHandlingMiddleware)
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 ```
 
-### Consistent Error Format
-
-All error responses across the API should follow this shape:
-
-```json
-{
-    "error": "error_code_snake_case",
-    "message": "Human-readable description.",
-    "error_id": "uuid-for-correlation",
-    "details": {}
-}
-```
-
-Register additional exception handlers for known error types:
+### Production (Restrictive)
 
 ```python
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-
-app = FastAPI()
-
-@app.exception_handler(ValueError)
-async def value_error_handler(request: Request, exc: ValueError):
-    return JSONResponse(
-        status_code=400,
-        content={
-            "error": "validation_error",
-            "message": str(exc),
-        },
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://app.example.com",
+        "https://admin.example.com",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID", "X-RateLimit-Remaining"],
+    max_age=600,  # Cache preflight for 10 minutes
+)
 ```
-
-### Notes
-- The `error_id` is a UUID included in both the log and the response. Support
-  teams can use it to correlate a user report with server logs.
-- Never send stack traces or internal details in the response body.
-- This middleware should be the outermost middleware (added last) so it wraps
-  everything including other middleware failures.
 
 ---
 
-## Middleware Registration Order
+## Recommended Middleware Order
 
-The order in which you add middleware matters. Middleware added first is
-outermost (processes request first, response last). A recommended order:
+Add middleware in this order (last added = outermost = executes first):
 
 ```python
-app = FastAPI()
-
-# 1. Error handling (outermost -- catches everything)
+# 5. Error handling (outermost — catches everything)
 app.add_middleware(ErrorHandlingMiddleware)
 
-# 2. Request logging (captures full lifecycle including errors)
+# 4. Request timing/logging
 app.add_middleware(RequestLoggingMiddleware)
 
-# 3. Timing (measures processing time)
-app.add_middleware(TimingMiddleware)
+# 3. Request ID assignment
+app.add_middleware(RequestIdMiddleware)
 
-# 4. CORS (must run before route handlers)
-app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, ...)
+# 2. Rate limiting
+app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
 
-# 5. Rate limiting (innermost of the custom middleware)
-app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60)
+# 1. CORS (innermost — closest to routes)
+app.add_middleware(CORSMiddleware, ...)
 ```
 
-Note: Starlette processes middleware in reverse registration order for requests.
-The last middleware added is the outermost. Adjust accordingly based on your
-framework version and verify with integration tests.
+This ensures:
+- CORS headers are always included (even on errors)
+- Rate limiting runs before route processing
+- Every request gets an ID before logging
+- All requests are logged with timing
+- Unhandled exceptions are caught and formatted

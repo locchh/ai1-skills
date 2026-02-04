@@ -9,262 +9,358 @@ description: >-
   cover monitoring setup (use monitoring-setup) or deployment procedures (use
   deployment-pipeline).
 license: MIT
-compatibility: 'Python 3.12+, FastAPI, PostgreSQL, Redis, Docker'
+compatibility: 'Any backend/frontend stack'
 metadata:
   author: platform-team
   version: '1.0.0'
   sdlc-phase: operations
-allowed-tools: Read Grep Glob Bash(docker:*) Bash(curl:*) Bash(psql:*) Bash(redis-cli:*)
+allowed-tools: Read Grep Glob Bash(curl:*) Bash(jq:*)
 context: fork
 ---
 
 # Incident Response
 
-Production incident response procedures for Python/React applications running on FastAPI with PostgreSQL, Redis, and Docker.
-
 ## When to Use
 
-Use this skill when:
+Activate this skill when:
+- Production service is down or returning errors to users
+- Error rate has spiked beyond normal thresholds
+- Performance has degraded significantly (latency increase, timeouts)
+- An alert has fired from the monitoring system
+- Users are reporting issues that indicate a systemic problem
+- A failed deployment needs investigation and remediation
+- Conducting a post-mortem or root cause analysis after an incident
 
-- **Production outages occur** and services are returning 5xx errors or are unreachable
-- **Error rate spikes** appear in monitoring dashboards or alerting systems
-- **Performance degradation** is detected via elevated latency, slow queries, or resource saturation
-- **User reports** indicate broken functionality, timeouts, or data inconsistencies
-- **Post-mortem analysis** is needed after an incident has been resolved
-
-Do **NOT** use this skill for:
-
-- Setting up monitoring, metrics, or alerting -- use `monitoring-setup` instead
-- Deploying code or managing CI/CD pipelines -- use `deployment-pipeline` instead
-- Routine operational tasks or infrastructure provisioning
+Do NOT use this skill for:
+- Setting up monitoring or alerting rules (use `monitoring-setup`)
+- Performing routine deployments (use `deployment-pipeline`)
+- Docker image or infrastructure issues (use `docker-best-practices`)
+- Feature development or code changes (use `python-backend-expert` or `react-frontend-expert`)
 
 ## Instructions
 
 ### Severity Classification
 
-Classify every incident immediately. Severity drives response urgency, communication, and escalation.
+Classify every incident immediately. Severity determines response urgency, communication cadence, and escalation path.
 
-| Level | Criteria | Response Time | Escalation | Target Resolution |
-|-------|----------|---------------|------------|-------------------|
-| **SEV1** | Complete outage, all users affected, data loss or breach | 5 min acknowledge | Page on-call, war room, notify leadership in 15 min | Under 1 hour |
-| **SEV2** | Major feature degraded, significant user impact | 15 min respond | Notify eng/product leads, status page in 30 min | Under 4 hours |
-| **SEV3** | Minor feature impacted, workaround available | 1 hour assess | Notify team via normal channels | Under 24 hours |
-| **SEV4** | Cosmetic issue, negligible impact | Bug ticket | None -- prioritize in sprint backlog | Within sprint |
+| Severity | Impact | Examples | Response Time | Update Cadence |
+|----------|--------|----------|---------------|----------------|
+| **SEV1 (P1)** | Complete outage, all users affected | Service down, data loss, security breach | Immediate (< 5 min) | Every 15 min |
+| **SEV2 (P2)** | Major degradation, most users affected | Core feature broken, severe latency | < 15 min | Every 30 min |
+| **SEV3 (P3)** | Partial degradation, some users affected | Non-critical feature broken, intermittent errors | < 1 hour | Every 2 hours |
+| **SEV4 (P4)** | Minor issue, few users affected | Cosmetic bug, edge case error | < 4 hours | Daily |
 
-**SEV1 examples:** App completely down, database unreachable, auth broken, security breach.
-**SEV2 examples:** Payment processing failing, 10x latency, search broken, job queue halted.
-**SEV3 examples:** Export broken but data viewable, non-critical integration intermittent.
-**SEV4 examples:** Typo in error message, minor alignment issue, harmless log noise.
+**Escalation rules:**
+- SEV1: Page on-call engineer + engineering manager immediately
+- SEV2: Page on-call engineer, notify engineering manager
+- SEV3: Notify on-call engineer via Slack
+- SEV4: Create ticket, address during normal working hours
 
-### Incident Commander Checklist
+See `references/escalation-contacts.md` for the contact matrix.
 
-The IC is the single point of authority. For SEV1/SEV2, designate an IC within 5 minutes.
+### 5-Minute Triage Workflow
 
-#### First 5 Minutes
+When an incident is detected, follow this triage workflow within the first 5 minutes.
 
-1. **Acknowledge the alert** and assume the IC role
-2. **Open a dedicated incident channel** (`#incident-YYYY-MM-DD-brief-description`)
-3. **Classify severity** using the table above
-4. **Post the initial assessment:**
-   ```
-   INCIDENT DECLARED | Severity: SEV2
-   Impact: API returning 503 for /orders endpoints
-   IC: @your-name | Next update: 15 minutes
-   ```
-5. **Assign roles:** Communications lead and investigators
+```
+┌─────────────────────────────────────────────────────────┐
+│  MINUTE 0-1: Acknowledge and Classify                   │
+│  • Acknowledge the alert or report                      │
+│  • Assign severity (SEV1-SEV4)                          │
+│  • Designate incident commander                         │
+├─────────────────────────────────────────────────────────┤
+│  MINUTE 1-2: Assess Scope                               │
+│  • Check health endpoints for all services              │
+│  • Check error rate and latency dashboards              │
+│  • Determine: which services are affected?              │
+├─────────────────────────────────────────────────────────┤
+│  MINUTE 2-3: Identify Recent Changes                    │
+│  • Check: was there a recent deployment?                │
+│  • Check: any infrastructure changes?                   │
+│  • Check: any external dependency issues?               │
+├─────────────────────────────────────────────────────────┤
+│  MINUTE 3-4: Initial Communication                      │
+│  • Post in #incidents channel                           │
+│  • Update status page if SEV1/SEV2                      │
+│  • Page additional responders if needed                 │
+├─────────────────────────────────────────────────────────┤
+│  MINUTE 4-5: Begin Investigation or Mitigate            │
+│  • If recent deploy: consider immediate rollback        │
+│  • If not deploy-related: begin diagnostic commands     │
+│  • Start incident timeline log                          │
+└─────────────────────────────────────────────────────────┘
+```
 
-#### Communication and Delegation
+**Quick health check command:**
+```bash
+./skills/incident-response/scripts/health-check-all-services.sh \
+  --output-dir ./incident-triage/
+```
 
-- **SEV1:** Update every 15 min. **SEV2:** Every 30 min. **SEV3:** As findings occur.
-- Communicate even with no new info -- silence creates anxiety.
-- The IC coordinates, not debugs. Delegate specific tasks: "Alice, check FastAPI logs." "Bob, review the last deploy diff." "Carol, check PostgreSQL connection pool."
+### Incident Commander Role
 
-### Diagnostic Commands
+The incident commander (IC) coordinates the response. They do NOT investigate directly.
 
-Run `scripts/quick-diagnosis.sh` for an automated check of all common health indicators.
+**IC responsibilities:**
+1. **Coordinate** -- Assign tasks to responders, prevent duplicate work
+2. **Communicate** -- Post regular updates to stakeholders
+3. **Decide** -- Make go/no-go decisions on rollback, escalation, communication
+4. **Track** -- Maintain the incident timeline
+5. **Close** -- Declare the incident resolved and schedule the post-mortem
 
-#### FastAPI Application
+**IC communication template (initial):**
+```
+INCIDENT DECLARED: [Title]
+Severity: [SEV1/SEV2/SEV3/SEV4]
+Commander: [Name]
+Start time: [UTC timestamp]
+Impact: [What users are experiencing]
+Status: Investigating
+Next update: [Time]
+```
+
+**IC communication template (update):**
+```
+INCIDENT UPDATE: [Title]
+Severity: [SEV level]
+Duration: [Time since start]
+Status: [Investigating/Identified/Mitigating/Resolved]
+Current findings: [What we know]
+Actions in progress: [What we are doing]
+Next update: [Time]
+```
+
+### Investigation Steps
+
+Follow these diagnostic steps based on the type of issue.
+
+#### Application Errors (FastAPI)
 
 ```bash
-curl -s http://localhost:8000/health | python3 -m json.tool
-curl -s http://localhost:8000/ready | python3 -m json.tool
-docker logs --tail 200 --timestamps backend-app 2>&1 | grep -i "error\|exception\|critical"
-docker logs --since 30m backend-app 2>&1 | grep -c "500\|503\|timeout"
+# 1. Check application logs for errors
+./skills/incident-response/scripts/fetch-logs.sh \
+  --service backend \
+  --since "15 minutes ago" \
+  --output-dir ./incident-logs/
+
+# 2. Check error rate from logs
+docker logs app-backend --since 15m 2>&1 | grep -c "ERROR"
+
+# 3. Check active connections and request patterns
+curl -s http://localhost:8000/health/ready | jq .
+
+# 4. Check if the issue is in a specific endpoint
+docker logs app-backend --since 15m 2>&1 | \
+  grep "ERROR" | \
+  grep -oP '"path":"[^"]*"' | sort | uniq -c | sort -rn
+
+# 5. Check Python process status
+docker exec app-backend ps aux
+docker exec app-backend python -c "import sys; print(sys.version)"
 ```
 
-#### PostgreSQL
+#### Database Issues (PostgreSQL)
 
 ```bash
-# Active connections by state
-psql -h localhost -U app_user -d app_db -c \
-  "SELECT state, count(*) FROM pg_stat_activity WHERE datname='app_db' GROUP BY state;"
+# 1. Check database connectivity
+docker exec app-db pg_isready -U postgres
 
-# Slow queries (over 5 seconds)
-psql -h localhost -U app_user -d app_db -c \
-  "SELECT pid, now()-query_start AS duration, left(query,80) FROM pg_stat_activity
-   WHERE (now()-query_start) > interval '5s' AND state != 'idle' ORDER BY duration DESC;"
+# 2. Check active connections (connection pool exhaustion?)
+docker exec app-db psql -U postgres -d app_prod -c "
+  SELECT count(*), state FROM pg_stat_activity
+  GROUP BY state ORDER BY count DESC;
+"
 
-# Connection pool utilization
-psql -h localhost -U app_user -d app_db -c \
-  "SELECT (SELECT count(*) FROM pg_stat_activity) AS active,
-          (SELECT setting::int FROM pg_settings WHERE name='max_connections') AS max;"
+# 3. Check for long-running queries (locks, deadlocks?)
+docker exec app-db psql -U postgres -d app_prod -c "
+  SELECT pid, now() - pg_stat_activity.query_start AS duration,
+         query, state
+  FROM pg_stat_activity
+  WHERE (now() - pg_stat_activity.query_start) > interval '30 seconds'
+  AND state != 'idle'
+  ORDER BY duration DESC;
+"
+
+# 4. Check for lock contention
+docker exec app-db psql -U postgres -d app_prod -c "
+  SELECT blocked_locks.pid AS blocked_pid,
+         blocking_locks.pid AS blocking_pid,
+         blocked_activity.query AS blocked_query
+  FROM pg_catalog.pg_locks blocked_locks
+  JOIN pg_catalog.pg_stat_activity blocked_activity
+    ON blocked_activity.pid = blocked_locks.pid
+  JOIN pg_catalog.pg_locks blocking_locks
+    ON blocking_locks.locktype = blocked_locks.locktype
+    AND blocking_locks.relation = blocked_locks.relation
+    AND blocking_locks.pid != blocked_locks.pid
+  JOIN pg_catalog.pg_stat_activity blocking_activity
+    ON blocking_activity.pid = blocking_locks.pid
+  WHERE NOT blocked_locks.granted;
+"
+
+# 5. Check disk space
+docker exec app-db df -h /var/lib/postgresql/data
 ```
 
-#### Redis
+#### Redis Issues
 
 ```bash
-redis-cli -h localhost ping
-redis-cli -h localhost info memory | grep -E "used_memory_human|maxmemory_human|mem_fragmentation_ratio"
-redis-cli -h localhost info clients | grep -E "connected_clients|blocked_clients"
-redis-cli -h localhost slowlog get 10
+# 1. Check Redis connectivity
+docker exec app-redis redis-cli ping
+
+# 2. Check memory usage
+docker exec app-redis redis-cli info memory | grep used_memory_human
+
+# 3. Check connected clients
+docker exec app-redis redis-cli info clients | grep connected_clients
+
+# 4. Check slow log
+docker exec app-redis redis-cli slowlog get 10
+
+# 5. Check keyspace
+docker exec app-redis redis-cli info keyspace
 ```
 
-#### Docker
+#### Network and Infrastructure
 
 ```bash
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
-docker ps -a --filter "status=exited" --format "table {{.Names}}\t{{.Status}}"
-docker inspect --format='{{json .State.Health}}' backend-app | python3 -m json.tool
+# 1. Check DNS resolution
+nslookup api.example.com
+
+# 2. Check SSL certificate expiry
+echo | openssl s_client -servername api.example.com -connect api.example.com:443 2>/dev/null | \
+  openssl x509 -noout -dates
+
+# 3. Check container resource usage
+docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"
+
+# 4. Check disk space on host
+df -h /
+
+# 5. Check if dependent services are reachable
+curl -sf https://external-api.example.com/health || echo "External API unreachable"
 ```
 
-### Common Failure Modes
+### Remediation Actions
 
-#### Database Connection Exhaustion
+#### Immediate Mitigations (apply within minutes)
 
-**Symptoms:** "Cannot acquire connection from pool" errors, requests timing out.
-**Diagnosis:** Check `pg_stat_activity` for `idle in transaction` connections.
-**Resolution:** Terminate leaked connections, restart app, increase pool size if needed, fix missing `async with` session blocks.
+| Issue | Mitigation | Command |
+|-------|-----------|---------|
+| Bad deployment | Rollback | `./scripts/deploy.sh --rollback --env production --version $PREV_SHA --output-dir ./results/` |
+| Connection pool exhausted | Restart backend | `docker restart app-backend` |
+| Long-running query | Kill query | `SELECT pg_terminate_backend(<pid>);` |
+| Memory leak | Restart service | `docker restart app-backend` |
+| Redis full | Flush non-critical keys | `redis-cli --scan --pattern "cache:*" \| xargs redis-cli del` |
+| SSL expired | Apply new cert | Update cert in load balancer |
+| Disk full | Clean logs/temp files | `docker system prune -f` |
 
-#### Memory Leaks
+#### Longer-Term Fixes (apply after stabilization)
 
-**Symptoms:** Steadily increasing memory, eventual OOM kills.
-**Diagnosis:** `docker stats --no-stream backend-app` -- watch trend over multiple samples.
-**Resolution:** Restart to restore service, then investigate with `tracemalloc`/`objgraph` in staging. Check for unbounded caches, growing module-level collections, unclosed sessions.
-See `references/runbooks/memory-leak-runbook.md` for detailed steps.
+1. **Fix the root cause in code** -- Create a branch, fix, test, deploy through normal pipeline
+2. **Add monitoring** -- If the issue was not caught by existing alerts, add new alert rules
+3. **Add tests** -- Write regression tests for the failure scenario
+4. **Update runbooks** -- Document the new failure mode and remediation steps
 
-#### Cascading Failures
+### Communication Protocol
 
-**Symptoms:** Multiple services failing, retry storms, circuit breakers tripping.
-**Resolution:** Check bottom-up (database -> backend -> frontend). Stabilize root service first. Enable rate limiting to stop retry storms. Recover layers sequentially.
+#### Internal Communication
 
-#### Certificate Expiry
+**Channels:**
+- `#incidents` -- Active incident coordination (SEV1/SEV2)
+- `#incidents-low` -- SEV3/SEV4 tracking
+- `#engineering` -- Post-incident summaries
 
-**Symptoms:** TLS handshake failures, "certificate has expired" in logs.
-**Resolution:** Renew immediately, deploy to load balancer, verify with `curl -vI`. Set up automated renewal and 30-day expiry alerts.
+**Rules:**
+1. All communication happens in the designated incident channel
+2. Use threads for investigation details, keep main channel for status updates
+3. IC posts updates at the defined cadence (see severity table)
+4. Tag relevant people explicitly, do not assume they are watching
+5. Timestamp all significant findings and actions
 
-### Rollback Decision Framework
+#### External Communication (SEV1/SEV2)
 
-#### When to Rollback
+**Status page update template:**
+```
+[Investigating] We are investigating reports of [issue description].
+Users may experience [user-visible impact].
+We will provide an update within [time].
+```
 
-- Issue introduced by the most recent deployment
-- Fix not obvious or will take over 30 minutes
-- SEV1/SEV2 where every minute matters
-- Deployment included many changes, hard to isolate
-- Database migrations are backward-compatible
+```
+[Identified] The issue has been identified as [brief description].
+We are working on a fix. Estimated resolution: [time estimate].
+```
 
-#### When to Hotfix
+```
+[Resolved] The issue affecting [service] has been resolved.
+The root cause was [brief description].
+We apologize for the disruption and will publish a detailed post-mortem.
+```
 
-- Root cause identified, fix is small (<20 lines)
-- Rollback would cause more disruption (e.g., irreversible migration)
-- Issue is pre-existing, surfaced by new traffic patterns
-- Fix deployable in under 30 minutes
+### Post-Mortem / RCA Framework
 
-#### Rollback Procedure
+Conduct a blameless post-mortem within 48 hours of every SEV1/SEV2 incident. SEV3 incidents receive a lightweight review.
 
+See `references/post-mortem-template.md` for the full template.
+
+**Post-mortem principles:**
+1. **Blameless** -- Focus on systems and processes, not individuals
+2. **Thorough** -- Identify all contributing factors, not just the trigger
+3. **Actionable** -- Every finding must produce a concrete action item with an owner
+4. **Timely** -- Conduct within 48 hours while details are fresh
+5. **Shared** -- Publish to the entire engineering team
+
+**Post-mortem structure:**
+1. **Summary** -- What happened, when, and what was the impact
+2. **Timeline** -- Minute-by-minute account of detection, investigation, mitigation
+3. **Root cause** -- The fundamental reason the incident occurred
+4. **Contributing factors** -- Other conditions that made the incident worse
+5. **What went well** -- Effective parts of the response
+6. **What could be improved** -- Gaps in detection, response, or tooling
+7. **Action items** -- Specific tasks with owners and due dates
+
+**Five Whys technique for root cause analysis:**
+```
+Why did users see 500 errors?
+  -> Because the backend service returned errors to the load balancer.
+Why did the backend service return errors?
+  -> Because database connections timed out.
+Why did database connections time out?
+  -> Because the connection pool was exhausted.
+Why was the connection pool exhausted?
+  -> Because a new endpoint opened connections without releasing them.
+Why were connections not released?
+  -> Because the endpoint was missing the async context manager for sessions.
+
+Root cause: Missing async context manager for database sessions in new endpoint.
+```
+
+**Generate a structured incident report:**
 ```bash
-docker images --format "{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" | head -10
-# gh workflow run rollback.yml -f version=<previous-good-tag>
-docker compose up -d --no-deps backend-app
-curl -s http://localhost:8000/health | python3 -m json.tool
-curl -s http://localhost:8000/ready | python3 -m json.tool
+python skills/incident-response/scripts/generate-incident-report.py \
+  --title "Database connection pool exhaustion" \
+  --severity SEV2 \
+  --start-time "2024-01-15T14:30:00Z" \
+  --end-time "2024-01-15T15:15:00Z" \
+  --output-dir ./post-mortems/
 ```
 
-Monitor for 15 minutes to confirm stability, then communicate the all-clear.
+### Incident Response Scripts
 
-### Communication Templates
+| Script | Purpose | Usage |
+|--------|---------|-------|
+| `scripts/fetch-logs.sh` | Fetch recent logs from services | `./scripts/fetch-logs.sh --service backend --since "30m" --output-dir ./logs/` |
+| `scripts/health-check-all-services.sh` | Check health of all services | `./scripts/health-check-all-services.sh --output-dir ./health/` |
+| `scripts/generate-incident-report.py` | Generate structured incident report | `python scripts/generate-incident-report.py --title "..." --severity SEV1 --output-dir ./reports/` |
 
-#### Status Page Updates
+### Quick Reference: Common Incident Patterns
 
-**Investigating:** "We are investigating [impact description]. Some users may experience [symptoms]. Next update: [time]."
-**Identified:** "We have identified the cause: [brief description]. Our team is implementing a fix. Estimated resolution: [time]."
-**Resolved:** "The issue has been resolved. [Brief summary]. Service normal since [time]. Duration: [total]. We apologize for the inconvenience."
-
-#### Slack -- Initial Post
-
-```
-INCIDENT DECLARED -- [SEV level]
-Service: [name] | Impact: [one-line description]
-IC: @[name] | Channel: #incident-[date]-[slug]
-Dashboard: [link] | Next update: [time]
-```
-
-#### Stakeholder Email (SEV1/SEV2)
-
-Subject: `[SEV1] Production Incident - [Service] - [Description]`. Include: impact, start time, current status, IC name, key findings, next steps, update cadence, incident channel link.
-
-### Post-Mortem Process
-
-Every SEV1/SEV2 requires a blameless post-mortem. SEV3 if recurring within 30 days.
-
-**Principles:** Blameless (systems, not people), thorough (full timeline), actionable (concrete items with owners and deadlines).
-
-**Timeline:** Draft within 3 business days. Review meeting within 5 days. Action items tracked with owners and due dates.
-
-**Structure:**
-1. Incident metadata (date, severity, duration, services, IC, responders)
-2. Executive summary (2-3 sentences)
-3. Minute-by-minute timeline from detection to resolution
-4. Root cause analysis using 5 Whys
-5. Contributing factors (missing monitoring, outdated runbook, insufficient testing)
-6. What went well / What could be improved
-7. Action items (specific, measurable, assigned, time-bound)
-
-See `references/post-mortem-template.md` for the complete format.
-
-## Examples
-
-### SEV2 Walkthrough: Database Connection Exhaustion
-
-**14:00** -- PagerDuty fires: "5xx rate above 5% for 5 minutes."
-
-**14:02** -- IC Alice opens `#incident-2025-03-15-api-errors`.
-
-**14:03** -- Initial diagnosis: `/health` returns 200 but `/ready` shows database error "Cannot acquire connection from pool." Redis is fine.
-
-**14:05** -- Alice delegates: Bob checks PostgreSQL, Carol checks recent deploys.
-
-**14:07** -- Bob finds 48 of 50 connections stuck in `idle in transaction`.
-
-**14:08** -- Carol finds a deployment at 13:45 with a new `/api/v1/reports/export` endpoint that leaks database sessions on the error path.
-
-**14:10** -- IC decides: rollback (faster than hotfix while connections are draining).
-
-```bash
-# Terminate leaked connections
-psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-         WHERE state='idle in transaction' AND query_start < now()-interval '5 min';"
-# Rollback to v2.4.0
-```
-
-**14:15** -- `/ready` returns healthy. Error rates back to baseline.
-
-**14:20** -- All-clear posted. Post-mortem scheduled.
-
-**Action items:** Fix leak with proper `async with`, add integration test for session cleanup, add alerting on idle-in-transaction count, add connection pool metrics to dashboard.
-
-## Edge Cases
-
-### Multi-Service Failures
-
-Check shared infrastructure first (database, Redis, DNS, load balancer). Most multi-service failures have a single root cause. Assign separate investigators but keep them in the same channel. Look for common triggers: traffic spike, third-party outage, certificate expiry, DNS change.
-
-### Data Corruption
-
-Stop writes immediately. Assess scope (rows, time window). Check if recoverable from logs or event sourcing. For point-in-time recovery, restore backup to a secondary database and compare. Never fix corrupted data in production without a verified plan and fresh backup. Document every modification for audit.
-
-### Third-Party Service Outages
-
-Confirm via their status page and direct API calls. Classify severity based on YOUR user impact. Activate fallbacks (cached responses, queued processing, graceful degradation). Communicate upstream provider issue to your users. Monitor their status page for recovery. Verify your integration after they recover -- do not assume automatic recovery.
-
-See `references/runbooks/` for service-specific runbooks covering API 503 errors, database slowness, high error rates, and memory leaks.
+| Pattern | Symptom | Likely Cause | First Action |
+|---------|---------|--------------|--------------|
+| 502/503 errors | Users see error page | Backend crashed or overloaded | Check `docker ps`, restart if needed |
+| Slow responses | High latency, timeouts | DB queries, external API | Check slow query log, DB connections |
+| Partial failures | Some endpoints fail | Single dependency down | Check individual service health |
+| Memory growth | OOM kills, restarts | Memory leak | Check `docker stats`, restart |
+| Error spike after deploy | Errors start exactly at deploy time | Bug in new code | Rollback immediately |
+| Gradual degradation | Slowly worsening metrics | Resource exhaustion, connection leak | Check resource usage trends |

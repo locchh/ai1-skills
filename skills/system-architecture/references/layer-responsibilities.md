@@ -1,221 +1,301 @@
 # Layer Responsibilities Guide
 
-Detailed guide on what belongs in each layer of the Python (FastAPI) + React/TypeScript architecture. When in doubt, check this reference.
+Detailed guide on what belongs in each layer of the FastAPI + React/TypeScript architecture. Use this reference when deciding where to place new code.
+
+---
 
 ## Backend Layers
 
-### Router Layer (`app/routers/`)
+### Routes (Routers)
 
-**Purpose:** HTTP interface — translates HTTP requests into service calls and service responses into HTTP responses.
+**Location:** `app/routes/` or `app/api/`
 
-**Allowed:**
-- Define route paths, HTTP methods, status codes
-- Parse request parameters (path, query, body, headers)
-- Validate request data using Pydantic schemas
-- Call service methods
-- Map service exceptions to HTTP status codes
-- Set response headers (caching, pagination links)
-- Enforce authentication via `Depends(get_current_user)`
-- Enforce authorization via `Depends(require_role('admin'))`
+**Responsibility:** HTTP interface — translate between HTTP and the application domain.
 
-**Forbidden:**
-- Business logic (calculations, decisions, workflows)
-- Direct database access (no session, no queries)
-- Importing models or repository classes
-- Constructing SQL queries
-- Calling external APIs directly
+**DOES:**
+- Parse and validate request data using Pydantic schemas
+- Call service methods with validated data
+- Return HTTP responses with appropriate status codes
+- Handle HTTP-specific concerns (headers, cookies, content negotiation)
+- Define FastAPI route decorators (`@router.get`, `@router.post`, etc.)
+- Use `Depends()` for dependency injection (auth, services, pagination)
+- Map domain exceptions to HTTP status codes via exception handlers
 
-**Example — correct:**
+**DOES NOT:**
+- Contain business logic or domain rules
+- Access the database directly
+- Import repository classes
+- Transform data beyond HTTP serialization
+- Make decisions about application behavior
+
+**Example:**
 ```python
-@router.post("/users", status_code=status.HTTP_201_CREATED)
+@router.post("/users", status_code=201, response_model=UserResponse)
 async def create_user(
     data: UserCreate,
-    current_user: User = Depends(get_current_user),
     service: UserService = Depends(get_user_service),
 ) -> UserResponse:
-    try:
-        user = await service.create(data)
-        return UserResponse.model_validate(user)
-    except DuplicateEmailError:
-        raise HTTPException(409, "Email already registered")
+    # Route only delegates to service — no logic here
+    user = await service.create_user(data)
+    return UserResponse.model_validate(user)
 ```
 
-**Example — wrong:**
-```python
-# BAD: Business logic in router
-@router.post("/users")
-async def create_user(data: UserCreate, session: AsyncSession = Depends(get_session)):
-    if await session.execute(select(User).where(User.email == data.email)):
-        raise HTTPException(409, "duplicate")  # BAD: direct DB access
-    user = User(**data.model_dump())
-    user.password = hash_password(data.password)  # BAD: business logic here
-    session.add(user)
-    await session.commit()
-```
+---
 
-### Service Layer (`app/services/`)
+### Services
 
-**Purpose:** Business logic — orchestrates operations, enforces business rules, coordinates between repositories.
+**Location:** `app/services/`
 
-**Allowed:**
-- Business rule enforcement (validation, authorization checks)
-- Orchestrating multiple repository calls
-- Calling external services (through injected clients)
-- Raising domain exceptions (ValueError, PermissionError, custom exceptions)
-- Data transformation between layers
-- Transaction coordination (using the session from repository)
+**Responsibility:** Business logic — the core of the application.
 
-**Forbidden:**
-- HTTP concepts (status codes, HTTPException, request/response objects)
-- Direct SQLAlchemy queries (use repository methods)
-- Importing FastAPI-specific modules
-- Knowledge of how data is stored (SQL vs NoSQL vs external API)
+**DOES:**
+- Implement business rules and domain logic
+- Orchestrate operations across multiple repositories
+- Validate business constraints (e.g., "user must have verified email to post")
+- Raise domain-specific exceptions (`NotFoundError`, `ConflictError`)
+- Coordinate transactions when multiple writes are needed
+- Emit domain events (if using event-driven patterns)
+- Apply authorization rules ("can this user perform this action?")
 
-**Example — correct:**
+**DOES NOT:**
+- Know about HTTP (no `Request`, `Response`, `HTTPException`, status codes)
+- Execute raw SQL queries
+- Import route modules
+- Handle serialization to/from JSON
+- Manage database sessions directly (receive via injection)
+
+**Example:**
 ```python
 class UserService:
-    def __init__(self, repo: UserRepository):
-        self._repo = repo
+    def __init__(self, repo: UserRepository, email_service: EmailService) -> None:
+        self.repo = repo
+        self.email_service = email_service
 
-    async def create(self, data: UserCreate) -> User:
-        existing = await self._repo.get_by_email(data.email)
+    async def create_user(self, data: UserCreate) -> User:
+        # Business rule: check for duplicate email
+        existing = await self.repo.get_by_email(data.email)
         if existing:
-            raise DuplicateEmailError(f"Email {data.email} already registered")
-        user = User(
-            email=data.email,
-            hashed_password=hash_password(data.password),
-        )
-        return await self._repo.create(user)
+            raise ConflictError(f"Email {data.email} already registered")
+
+        # Business logic: hash password, create user
+        hashed = hash_password(data.password)
+        user = await self.repo.create(email=data.email, hashed_password=hashed)
+
+        # Side effect: send welcome email
+        await self.email_service.send_welcome(user.email)
+
+        return user
 ```
 
-### Repository Layer (`app/repositories/`)
+---
 
-**Purpose:** Data access — encapsulates all database operations behind a clean interface.
+### Repositories
 
-**Allowed:**
-- SQLAlchemy queries (select, insert, update, delete)
-- Relationship loading strategies (selectinload, joinedload)
-- Pagination and filtering at the query level
-- Mapping database exceptions to domain exceptions
-- Using the async session for all operations
+**Location:** `app/repositories/`
 
-**Forbidden:**
-- Business rules (what to do with the data)
-- HTTP concepts
-- Knowledge of who calls it (router, service, background task)
-- Raising HTTPException
+**Responsibility:** Data access — encapsulate all database interactions.
 
-**Example — correct:**
+**DOES:**
+- Execute database queries (SELECT, INSERT, UPDATE, DELETE)
+- Use SQLAlchemy ORM or Core for query construction
+- Handle query optimization (eager loading, pagination, filtering)
+- Return model instances, lists, or None
+- Apply database-level constraints (unique checks via queries)
+- Manage query-level concerns (ordering, limiting, offsetting)
+
+**DOES NOT:**
+- Contain business logic or validation rules
+- Raise domain exceptions (raise data-layer exceptions or return None)
+- Know about HTTP or API contracts
+- Import service classes
+- Handle transactions (the service or middleware manages transaction scope)
+- Transform data into response formats
+
+**Example:**
 ```python
 class UserRepository:
-    def __init__(self, session: AsyncSession):
-        self._session = session
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
 
-    async def get_by_email(self, email: str) -> User | None:
-        stmt = select(User).where(User.email == email)
-        result = await self._session.execute(stmt)
+    async def get_by_id(self, user_id: int) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.id == user_id)
+        )
         return result.scalar_one_or_none()
 
-    async def create(self, user: User) -> User:
-        self._session.add(user)
-        await self._session.flush()
-        await self._session.refresh(user)
-        return user
+    async def get_by_email(self, email: str) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.email == email)
+        )
+        return result.scalar_one_or_none()
 
-    async def list_paginated(
-        self, cursor: str | None, limit: int
-    ) -> list[User]:
-        stmt = select(User).order_by(User.id)
-        if cursor:
-            stmt = stmt.where(User.id > decode_cursor(cursor))
-        stmt = stmt.limit(limit + 1)  # fetch one extra to check has_more
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
+    async def create(self, **kwargs) -> User:
+        user = User(**kwargs)
+        self.session.add(user)
+        await self.session.flush()  # Get the ID without committing
+        return user
 ```
 
-### Model Layer (`app/models/`)
+---
 
-**Purpose:** Database table definitions — the source of truth for database schema.
+### Models
 
-**Allowed:**
-- Column definitions with types and constraints
-- Relationship definitions
-- Table-level constraints (unique, check, index)
-- Hybrid properties for computed columns
-- `__tablename__` and table args
+**Location:** `app/models/`
 
-**Forbidden:**
-- Business logic methods
-- Validation beyond database constraints
-- Import of service or repository classes
+**Responsibility:** Database schema definition — map Python classes to database tables.
 
-### Schema Layer (`app/schemas/`)
+**DOES:**
+- Define table columns with types, constraints, and defaults
+- Define relationships between tables (foreign keys, back_populates)
+- Define indexes (single-column, composite, partial)
+- Use SQLAlchemy 2.0 `Mapped` type annotations
+- Specify eager loading strategy on relationships (`lazy="selectin"` for async)
 
-**Purpose:** Data transfer objects — define the shape of API request and response bodies.
+**DOES NOT:**
+- Contain business logic or methods
+- Import services or repositories
+- Define API-facing schemas (that's Pydantic's job)
+- Manage sessions or transactions
 
-**Allowed:**
-- Field definitions with types and validation
-- Pydantic validators (@field_validator, @model_validator)
-- Computed fields (@computed_field)
-- Model config (ConfigDict)
-- Naming convention: XxxCreate, XxxUpdate, XxxResponse, XxxListResponse
+**Conventions:**
+- Table names: plural snake_case (`users`, `blog_posts`)
+- Column names: snake_case (`created_at`, `is_active`)
+- Always set `lazy="selectin"` or `lazy="joined"` for async compatibility
+- Use `server_default` for database-level defaults (e.g., `func.now()`)
+- Define `__repr__` for debugging convenience
 
-**Forbidden:**
-- Database operations
-- Business logic beyond field-level validation
-- Import of models or repositories
+---
+
+### Schemas (Pydantic v2)
+
+**Location:** `app/schemas/`
+
+**Responsibility:** Data validation and serialization — define the shape of data at API boundaries.
+
+**DOES:**
+- Validate request data (types, constraints, formats)
+- Define response shapes (what fields are exposed to the client)
+- Apply field-level validation (min/max length, regex, email format)
+- Apply model-level validation (cross-field constraints)
+- Provide serialization/deserialization between JSON and Python objects
+
+**DOES NOT:**
+- Contain business logic
+- Access the database
+- Import models directly (use `model_validate()` for ORM → schema conversion)
+
+**Naming conventions:**
+- `{Resource}Create` — POST request body (e.g., `UserCreate`)
+- `{Resource}Update` — PUT/PATCH request body (e.g., `UserUpdate`)
+- `{Resource}Response` — Response body (e.g., `UserResponse`)
+- `{Resource}Filter` — Query parameters for filtering (e.g., `UserFilter`)
+- `{Resource}ListResponse` — Paginated list response (e.g., `UserListResponse`)
+
+---
 
 ## Frontend Layers
 
-### Pages (`src/pages/`)
+### Pages
 
-**Purpose:** Route entry points — one page component per route.
+**Location:** `src/pages/`
 
-**Allowed:**
+**Responsibility:** Route-level components — compose features and layouts for a URL.
+
+**DOES:**
+- Fetch data needed for the page (via TanStack Query hooks)
 - Compose layout and feature components
-- Use hooks for data fetching and state
-- Handle route parameters
-- Page-level error boundaries
+- Handle page-level loading and error states
+- Define page metadata (title, description)
 
-**Forbidden:**
-- Direct API calls (use hooks)
-- Complex business logic (extract to hooks)
+**DOES NOT:**
+- Contain reusable UI components
+- Define data fetching logic (that lives in hooks)
+- Implement complex business logic
 
-### Feature Components (`src/components/`)
+---
 
-**Purpose:** Domain-specific UI components.
+### Features
 
-**Allowed:**
-- Render domain-specific UI (UserList, OrderForm)
-- Use custom hooks for data
-- Handle user interactions
-- Local state for UI concerns
+**Location:** `src/features/`
 
-### Hooks (`src/hooks/`)
+**Responsibility:** Domain-specific UI — composed from shared components and hooks.
 
-**Purpose:** Encapsulate data fetching, business logic, and reusable state.
+**DOES:**
+- Implement domain-specific UI (UserProfile, OrderList, ChatPanel)
+- Use custom hooks for data and state management
+- Compose shared components with domain-specific props
+- Handle feature-specific interactions and state
 
-**Allowed:**
-- TanStack Query hooks (useQuery, useMutation)
-- State management logic
-- Side effects (useEffect)
-- Custom business logic
+**DOES NOT:**
+- Make direct API calls (use hooks)
+- Define reusable generic components (those go in `components/`)
 
-**Forbidden:**
-- Direct DOM manipulation
-- Rendering JSX
+---
 
-### Services (`src/services/`)
+### Shared Components
 
-**Purpose:** API client functions — the only layer that knows about HTTP endpoints.
+**Location:** `src/components/`
 
-**Allowed:**
-- Fetch/axios calls to backend API
-- Request/response type definitions
-- Token attachment (via interceptor)
-- Error response parsing
+**Responsibility:** Reusable UI primitives — generic, configurable via props.
 
-**Forbidden:**
-- React hooks (these are plain functions)
-- UI logic
-- State management
+**DOES:**
+- Render UI elements (Button, Modal, Table, Form, Input, Card)
+- Accept configuration via props (variant, size, disabled, onClick)
+- Handle visual states (hover, focus, loading, disabled)
+- Implement accessibility (ARIA attributes, keyboard navigation)
+
+**DOES NOT:**
+- Fetch data or manage server state
+- Contain business logic
+- Import feature-level components
+
+---
+
+### Hooks
+
+**Location:** `src/hooks/`
+
+**Responsibility:** Reusable stateful logic — abstract away complexity from components.
+
+**DOES:**
+- Wrap TanStack Query calls (useQuery, useMutation)
+- Manage complex local state (useReducer patterns)
+- Encapsulate browser API interactions (useMediaQuery, useLocalStorage)
+- Provide domain-specific logic (useAuth, usePagination, useDebounce)
+
+**Naming:** Always prefix with `use` (e.g., `useAuth`, `useUsers`, `useDebounce`)
+
+---
+
+### API Layer
+
+**Location:** `src/api/`
+
+**Responsibility:** API client — define how to communicate with the backend.
+
+**DOES:**
+- Define API endpoint functions (e.g., `fetchUsers`, `createUser`)
+- Configure HTTP client (axios/fetch with base URL, interceptors)
+- Define TanStack Query options using `queryOptions()` factory
+- Handle token injection and refresh
+
+**DOES NOT:**
+- Manage UI state
+- Handle errors (let TanStack Query and components handle display)
+
+---
+
+## Decision Guide: Where Does This Code Go?
+
+| If the code... | Put it in... |
+|----------------|-------------|
+| Parses HTTP request or formats HTTP response | Routes |
+| Enforces a business rule | Services |
+| Queries or writes to the database | Repositories |
+| Defines a table schema | Models |
+| Validates input or shapes output | Schemas |
+| Composes UI for a URL | Pages |
+| Implements domain-specific UI | Features |
+| Is a reusable UI element | Shared Components |
+| Manages stateful logic for components | Hooks |
+| Calls the backend API | API Layer |

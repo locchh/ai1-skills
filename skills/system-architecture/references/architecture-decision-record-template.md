@@ -1,95 +1,122 @@
-# Architecture Decision Record: [ADR-NNN] [Title]
+# Architecture Decision Record Template
 
-## Status
-
-**[Proposed | Accepted | Deprecated | Superseded by ADR-NNN]**
-
-## Date
-
-[YYYY-MM-DD]
-
-## Context
-
-Describe the situation that led to this decision. Include:
-- What problem or requirement triggered this decision?
-- What constraints exist (technical, organizational, timeline)?
-- What assumptions are we making?
-- What is the current state (if changing existing architecture)?
-
-## Decision
-
-State the decision clearly in one or two sentences.
-
-> We will [decision statement].
-
-## Options Considered
-
-### Option A: [Name]
-
-**Description:** [How it works]
-
-**Pros:**
-- [advantage 1]
-- [advantage 2]
-
-**Cons:**
-- [disadvantage 1]
-- [disadvantage 2]
-
-**Evaluation:**
-| Criterion | Score (1-5) |
-|-----------|------------|
-| Maintainability | [N] |
-| Testability | [N] |
-| Performance | [N] |
-| Team Familiarity | [N] |
-| Ecosystem Maturity | [N] |
-| **Total** | **[N]** |
-
-### Option B: [Name]
-
-[Same structure as Option A]
-
-### Option C: [Name] (if applicable)
-
-[Same structure as Option A]
-
-## Consequences
-
-### Positive
-- [positive consequence 1]
-- [positive consequence 2]
-
-### Negative
-- [negative consequence 1 — and how we'll mitigate]
-- [negative consequence 2 — and how we'll mitigate]
-
-### Neutral
-- [neutral observation]
-
-## Implementation Notes
-
-- [Key implementation detail 1]
-- [Key implementation detail 2]
-- [Migration path if changing existing architecture]
-
-## Related Decisions
-
-- [ADR-NNN: Related decision title]
-- [ADR-NNN: Related decision title]
-
-## References
-
-- [Link to relevant documentation]
-- [Link to discussion or RFC]
+Use this template to document architectural decisions. Store ADRs in a `docs/adr/` directory in the project root, numbered sequentially (e.g., `001-use-postgresql.md`).
 
 ---
 
-## Template Usage Notes
+## ADR-NNN: [Short Title]
 
-1. **Number ADRs sequentially** — ADR-001, ADR-002, etc.
-2. **Never delete ADRs** — mark as Deprecated or Superseded instead
-3. **Keep decisions atomic** — one decision per ADR
-4. **Evaluation criteria weights** — adjust based on project priorities
-5. **Store ADRs in** `docs/architecture/decisions/` or equivalent
-6. **Review ADRs quarterly** — are deprecated decisions causing tech debt?
+**Status:** [Proposed | Accepted | Deprecated | Superseded by ADR-NNN]
+
+**Date:** YYYY-MM-DD
+
+**Deciders:** [List of people involved in the decision]
+
+---
+
+### Context
+
+Describe the situation that requires a decision. Include:
+- What is the problem or opportunity?
+- What are the constraints (technical, business, timeline)?
+- What forces are at play (team skills, existing infrastructure, dependencies)?
+
+Example:
+> The application needs to store user-uploaded files. Currently files are stored on the local filesystem, which does not scale across multiple application instances. We need a shared storage solution that supports the expected growth from 1,000 to 100,000 users within the next year.
+
+---
+
+### Decision
+
+State the decision clearly in one sentence, then elaborate on the details.
+
+Example:
+> We will use Amazon S3 for file storage, accessed via the `aioboto3` library for async operations.
+
+Details:
+- Files will be organized by `user_id/year/month/filename`
+- Access will be via presigned URLs with 1-hour expiration
+- Maximum file size: 50MB (enforced at upload)
+- Allowed MIME types: images (JPEG, PNG, WebP), documents (PDF)
+
+---
+
+### Options Considered
+
+#### Option 1: [Name]
+- **Description:** Brief technical description
+- **Pros:** List advantages
+- **Cons:** List disadvantages
+- **Estimated effort:** [trivial / small / medium / large]
+
+#### Option 2: [Name]
+- **Description:** Brief technical description
+- **Pros:** List advantages
+- **Cons:** List disadvantages
+- **Estimated effort:** [trivial / small / medium / large]
+
+#### Option 3: [Name] (if applicable)
+- **Description:** Brief technical description
+- **Pros:** List advantages
+- **Cons:** List disadvantages
+- **Estimated effort:** [trivial / small / medium / large]
+
+---
+
+### Evaluation Criteria
+
+| Criterion | Weight | Option 1 | Option 2 | Option 3 |
+|-----------|--------|----------|----------|----------|
+| Maintainability | High | | | |
+| Testability | High | | | |
+| Performance | Medium | | | |
+| Team familiarity | Medium | | | |
+| Operational cost | Low | | | |
+
+---
+
+### Consequences
+
+#### Positive
+- List expected benefits of this decision
+
+#### Negative
+- List expected drawbacks or trade-offs
+
+#### Risks
+- List risks and their mitigations
+
+---
+
+### Reversibility
+
+**Is this a one-way or two-way door?**
+
+- **One-way door:** Difficult or expensive to reverse (e.g., database engine change, programming language switch). Requires careful consideration.
+- **Two-way door:** Easy to reverse if it doesn't work out (e.g., library choice, caching strategy). Prefer fast execution over extensive analysis.
+
+---
+
+### Follow-Up Actions
+
+- [ ] Action 1: [Description] — Owner: [Name] — Due: [Date]
+- [ ] Action 2: [Description] — Owner: [Name] — Due: [Date]
+
+---
+
+### References
+
+- [Link to relevant documentation]
+- [Link to related ADRs]
+- [Link to technical research or benchmarks]
+
+---
+
+## ADR Lifecycle
+
+1. **Proposed** — Draft written, under discussion
+2. **Accepted** — Team agrees, ready for implementation
+3. **Deprecated** — No longer relevant (explain why in the document)
+4. **Superseded** — Replaced by a newer ADR (link to the replacement)
+
+Keep all ADRs in the repository, even deprecated ones. They provide valuable historical context for future decisions.

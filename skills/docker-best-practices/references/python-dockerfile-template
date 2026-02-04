@@ -1,64 +1,102 @@
 # =============================================================================
-# Production Python Dockerfile (Multi-Stage Build)
+# Production Python Multi-Stage Dockerfile
 # =============================================================================
-# This Dockerfile produces a minimal, secure production image.
+# Base: python:3.12-slim (Debian-based, best binary wheel compatibility)
+# Pattern: Builder stage installs dependencies, runtime stage copies only what
+#          is needed. Final image has no build tools, no pip cache, non-root user.
 #
-# Key optimizations:
-# - Multi-stage build: dependencies are installed in a builder stage, only the
-#   virtualenv is copied to the final image, drastically reducing image size.
-# - Non-root user: the application runs as an unprivileged user for security.
-# - .dockerignore: ensure you have one to exclude .git, __pycache__, .env, etc.
-# - Layer ordering: dependencies are installed before copying source code so
-#   that the dependency layer is cached when only source code changes.
+# Build:
+#   docker build -t app-backend:latest -f Dockerfile.backend .
+#
+# Run:
+#   docker run -p 8000:8000 --env-file .env app-backend:latest
 # =============================================================================
 
-# --- Stage 1: Builder --------------------------------------------------------
-# Install dependencies into a virtualenv so we can copy just the venv later.
+# ---------------------------------------------------------------------------
+# Stage 1: Builder -- install Python dependencies
+# ---------------------------------------------------------------------------
 FROM python:3.12-slim AS builder
 
-WORKDIR /build
+WORKDIR /app
 
-# Install system-level build dependencies (e.g., for psycopg2, cryptography)
+# Install build-time system dependencies
+# - build-essential: gcc, make (needed for compiling C extensions)
+# - libpq-dev: PostgreSQL client headers (needed for psycopg2)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create a virtualenv and install Python dependencies
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
+# Copy only requirements first for better layer caching
+# This layer is rebuilt only when requirements.txt changes
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
 
-# --- Stage 2: Runtime --------------------------------------------------------
-# Start from a clean slim image - no build tools, no caches.
+# Install Python dependencies into /install prefix
+# --no-cache-dir: do not store pip cache (saves ~50MB)
+# --prefix=/install: isolate packages for clean COPY to runtime stage
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime -- minimal production image
+# ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
-# Install only the runtime system libraries (no compilers)
+# Metadata labels (OCI standard)
+LABEL org.opencontainers.image.title="app-backend"
+LABEL org.opencontainers.image.description="FastAPI backend application"
+LABEL org.opencontainers.image.vendor="platform-team"
+
+# Install runtime-only system dependencies
+# - libpq5: PostgreSQL client library (runtime only, no headers)
+# - curl: needed for HEALTHCHECK
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq5 curl && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        libpq5 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy the pre-built virtualenv from the builder stage
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Create non-root user
+# - No login shell (/sbin/nologin)
+# - No home directory created
+# - Dedicated group
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -d /app -s /sbin/nologin appuser
 
-# Create a non-root user and switch to it
-RUN groupadd --gid 1000 app && \
-    useradd --uid 1000 --gid app --create-home app
-USER app
+WORKDIR /app
 
-WORKDIR /home/app
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
 
-# Copy application source code (owned by the app user)
-COPY --chown=app:app . .
+# Copy application code
+COPY --chown=appuser:appuser src/ ./src/
+COPY --chown=appuser:appuser alembic/ ./alembic/
+COPY --chown=appuser:appuser alembic.ini .
 
+# Ensure the app directory is owned by appuser
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose the application port
 EXPOSE 8000
 
-# Health check: verify the application responds on /health
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Health check: verify the application is responding
+# - interval: check every 30 seconds
+# - timeout: fail if no response within 10 seconds
+# - retries: mark unhealthy after 3 consecutive failures
+# - start_period: give the app 15 seconds to start up
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run with a production ASGI server
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run with uvicorn
+# - --host 0.0.0.0: bind to all interfaces (required in Docker)
+# - --port 8000: match EXPOSE
+# - --workers 4: production worker count (adjust based on CPU cores)
+# - --access-log: enable access logging
+CMD ["uvicorn", "src.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "4", \
+     "--access-log"]
