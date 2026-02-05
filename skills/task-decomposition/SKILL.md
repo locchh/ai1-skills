@@ -29,7 +29,7 @@ Activate this skill when:
 - A `project-planner` output (module map, risks, acceptance criteria) needs to be broken into atomic, executable tasks
 - Work needs to be parallelized across multiple agents or developers
 
-**Expected input:** A `project-planner` output containing the module map, risks, and acceptance criteria — OR a high-level objective if no plan exists yet. The `project-planner` skill produces the strategic plan (what modules are affected and why). This skill turns that plan into ordered, executable atomic tasks with persistent tracking.
+**Expected input:** Read `plan.md` (or `plan-<feature-name>.md`) produced by `project-planner`. This file contains the module map, risks, and acceptance criteria. If no plan file exists, accept a high-level objective directly and work from that. The `project-planner` skill produces the strategic plan (what modules are affected and why). This skill turns that plan into ordered, executable atomic tasks with persistent tracking.
 
 Do NOT use this skill for:
 - High-level project planning or feature scoping (use `project-planner`)

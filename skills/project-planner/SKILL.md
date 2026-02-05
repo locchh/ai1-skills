@@ -15,7 +15,7 @@ metadata:
   author: platform-team
   version: '2.0.0'
   sdlc-phase: planning
-allowed-tools: Read Grep Glob
+allowed-tools: Read Grep Glob Write
 context: fork
 ---
 
@@ -112,7 +112,9 @@ See `references/risk-assessment-checklist.md` for the complete risk category lis
 
 ### Output Format
 
-Produce a plan document with this structure (or see `references/plan-template.md`):
+Write the plan to a file at the project root: **`plan.md`** (or `plan-<feature-name>.md` if multiple plans exist). Use `references/plan-template.md` as the template.
+
+The file must contain:
 
 ```markdown
 # Implementation Plan: [Feature Name]
@@ -143,7 +145,7 @@ Produce a plan document with this structure (or see `references/plan-template.md
 [Overall complexity estimate — see table below]
 ```
 
-**Note:** This plan does not include atomic implementation tasks. Pass this plan to `/task-decomposition` to break it into ordered, independently-verifiable tasks with persistent tracking files.
+**Always write the plan to a file.** This enables `/task-decomposition` to read it as input. After writing, tell the user: "Plan written to `plan.md`. Run `/task-decomposition` to break it into atomic tasks."
 
 ### Estimation Summary
 
@@ -207,7 +209,7 @@ Complexity guidelines:
 | API changes | Yes (new upload endpoint) |
 | Overall complexity | medium |
 
-**Next step:** Pass this plan to `/task-decomposition` to create atomic implementation tasks.
+**Output:** Written to `plan.md`. Run `/task-decomposition` to break it into atomic tasks.
 
 ## Edge Cases
 

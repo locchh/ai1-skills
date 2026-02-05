@@ -103,7 +103,7 @@ Use this template when producing an implementation plan for a feature, enhanceme
 
 ## Next Step
 
-Pass this plan to `/task-decomposition` to break it into atomic implementation tasks with persistent tracking files (`task_plan.md`, `progress.md`, `findings.md`).
+Run `/task-decomposition` to read this plan file and break it into atomic implementation tasks with persistent tracking files (`task_plan.md`, `progress.md`, `findings.md`).
 
 ## Notes
 
