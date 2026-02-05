@@ -31,6 +31,8 @@ Activate this skill when:
 - Implementing distributed tracing with OpenTelemetry
 - Reviewing or improving existing observability coverage
 
+**Output:** Write observability configuration summary to `monitoring-config.md` documenting what was set up (metrics, alerts, dashboards, health checks).
+
 Do NOT use this skill for:
 - Responding to active production incidents (use `incident-response`)
 - Deploying monitoring infrastructure (use `deployment-pipeline`)
@@ -444,31 +446,7 @@ External uptime monitoring validates the service from a user's perspective.
 
 ### Quick Reference
 
-**Set up logging:**
-```python
-# See references/logging-config-template.py
-from app.logging_config import setup_logging
-setup_logging(log_level="INFO", json_format=True)
-```
-
-**Add Prometheus metrics:**
-```python
-# See references/metrics-config-template.py
-from app.metrics import setup_metrics
-setup_metrics(app)
-```
-
-**Configure alerts:**
-```yaml
-# See references/alert-rules-template.yml
-# Copy to your Prometheus alert rules directory
-```
-
-**Create dashboard:**
-```json
-// See references/dashboard-template.json
-// Import into Grafana via Dashboard -> Import -> Upload JSON
-```
+See `references/` for complete templates: `logging-config-template.py`, `metrics-config-template.py`, `alert-rules-template.yml`, `dashboard-template.json`.
 
 ### Monitoring Checklist for New Services
 
@@ -482,3 +460,38 @@ setup_metrics(app)
 - [ ] Grafana dashboard created with standard sections
 - [ ] External uptime monitoring configured
 - [ ] Log retention policy defined (default: 30 days)
+
+### Output File
+
+Write monitoring configuration summary to `monitoring-config.md`:
+
+```markdown
+# Monitoring Configuration: [Service Name]
+
+## Metrics
+
+| Metric | Type | Labels | Purpose |
+|--------|------|--------|---------|
+| http_requests_total | Counter | method, endpoint, status | RED: Request rate |
+| http_request_duration_seconds | Histogram | method, endpoint | RED: Latency |
+
+## Alerts
+
+| Alert | Condition | Severity | Runbook |
+|-------|-----------|----------|---------|
+| HighErrorRate | error_rate > 5% for 5m | SEV2 | docs/runbooks/high-error-rate.md |
+
+## Health Checks
+
+- `/health` — Liveness probe
+- `/health/ready` — Readiness probe (checks DB, Redis)
+
+## Dashboards
+
+- Grafana: Service Overview (imported from references/dashboard-template.json)
+
+## Next Steps
+
+- Run `/deployment-pipeline` to deploy with monitoring enabled
+- Run `/incident-response` if alerts fire
+```

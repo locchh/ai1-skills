@@ -32,6 +32,8 @@ Activate this skill when:
 - Setting up canary or blue-green deployment strategies
 - Troubleshooting deployment failures or pipeline errors
 
+**Output:** Write deployment results to `deployment-report.md` with status, version deployed, health check results, and rollback instructions if needed.
+
 Do NOT use this skill for:
 - Building or optimizing Docker images (use `docker-best-practices`)
 - Responding to production incidents (use `incident-response`)
@@ -431,4 +433,48 @@ The following scripts automate deployment tasks:
   --env production \
   --version $PREVIOUS_SHA \
   --output-dir ./rollback-results/
+```
+
+### Output File
+
+Write deployment results to `deployment-report.md`:
+
+```markdown
+# Deployment Report
+
+## Summary
+
+- **Environment:** staging | production
+- **Version:** abc1234 (git SHA)
+- **Status:** SUCCESS | FAILED | ROLLED_BACK
+- **Timestamp:** 2024-01-15T14:30:00Z
+- **Duration:** 12 minutes
+
+## Pipeline Stages
+
+| Stage | Status | Duration | Notes |
+|-------|--------|----------|-------|
+| Build | PASS | 3m | Image built: app:abc1234 |
+| Test | PASS | 5m | 142 tests, 85% coverage |
+| Staging | PASS | 2m | Smoke tests passed |
+| Production | PASS | 2m | Canary 10% → 50% → 100% |
+
+## Health Checks
+
+- `/health` — 200 OK (12ms)
+- `/health/ready` — 200 OK (45ms)
+
+## Rollback Instructions
+
+If issues occur, run:
+\`\`\`bash
+./scripts/deploy.sh --rollback --env production --version $PREV_SHA
+\`\`\`
+
+Previous version: def5678
+
+## Next Steps
+
+- Run `/monitoring-setup` to verify alerts are configured
+- Run `/incident-response` if errors occur
 ```

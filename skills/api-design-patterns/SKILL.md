@@ -14,7 +14,7 @@ metadata:
   author: platform-team
   version: '1.0.0'
   sdlc-phase: architecture
-allowed-tools: Read Grep Glob
+allowed-tools: Read Grep Glob Write
 context: fork
 ---
 
@@ -30,6 +30,10 @@ Activate this skill when:
 - Planning API versioning or deprecation strategy
 - Reviewing API contracts for consistency before implementation
 - Documenting endpoint specifications for frontend/backend coordination
+
+**Input:** If `plan.md` or `architecture.md` exists, read for context about the feature scope and architectural decisions. Otherwise, work from the user's request directly.
+
+**Output:** Write API design to `api-design.md`. Tell the user: "API design written to `api-design.md`. Run `/task-decomposition` to create implementation tasks or `/python-backend-expert` to implement."
 
 Do NOT use this skill for:
 - Writing implementation code (use `python-backend-expert`)
@@ -406,3 +410,43 @@ When a resource logically belongs to a parent but nesting would exceed 2 levels,
 ```
 
 This keeps URLs flat while maintaining the relationship through filtering.
+
+### Output File
+
+Write the API design to `api-design.md` at the project root:
+
+```markdown
+# API Design: [Feature Name]
+
+## Endpoints
+
+| Method | URL | Description | Auth |
+|--------|-----|-------------|------|
+| GET | /v1/users | List users | Required |
+| POST | /v1/users | Create user | Required |
+
+## Request/Response Schemas
+
+### UserCreate
+| Field | Type | Required | Validation |
+|-------|------|----------|------------|
+| email | string | Yes | Valid email |
+| name | string | Yes | 1-100 chars |
+
+### UserResponse
+| Field | Type | Description |
+|-------|------|-------------|
+| id | uuid | User ID |
+| email | string | User email |
+
+## Error Codes
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| USER_NOT_FOUND | 404 | User does not exist |
+| EMAIL_EXISTS | 409 | Email already registered |
+
+## Next Steps
+- Run `/task-decomposition` to create implementation tasks
+- Run `/python-backend-expert` to implement endpoints
+```

@@ -14,7 +14,7 @@ metadata:
   author: security-team
   version: '1.0.0'
   sdlc-phase: code-review
-allowed-tools: Read Grep Glob Bash(python:*) Bash(npm:*)
+allowed-tools: Read Grep Glob Write Bash(python:*) Bash(npm:*)
 context: fork
 ---
 
@@ -30,6 +30,8 @@ Activate this skill when:
 - Validating that secrets are not committed to the repository
 - Scanning dependencies for known vulnerabilities
 - Reviewing API endpoints that expose sensitive data
+
+**Output:** Write findings to `security-review.md` with severity, file:line, description, and recommendations.
 
 Do NOT use this skill for:
 - Deployment infrastructure security (use `docker-best-practices`)
@@ -455,3 +457,29 @@ npm audit --json > npm-audit.json
 > @limiter.limit("5/minute")
 > async def login(request: Request, ...):
 > ```
+
+### Output File
+
+Write security findings to `security-review.md`:
+
+```markdown
+# Security Review: [Feature/PR Name]
+
+## Summary
+- Critical: 0 | High: 1 | Medium: 2 | Low: 1
+
+## Findings
+
+### [CRITICAL] SQL Injection in user search
+- **File:** app/routes/users.py:45
+- **OWASP:** A03 Injection
+- **Description:** Raw SQL with string interpolation
+- **Recommendation:** Use SQLAlchemy ORM filtering
+
+### [HIGH] Missing authorization check
+...
+
+## Passed Checks
+- No hardcoded secrets found
+- Dependencies up to date
+```

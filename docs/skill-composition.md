@@ -42,30 +42,34 @@ Skills activate based on keywords in your prompt. Each skill's `description` fie
 
 ### Vertical Composition (Producer → Consumer)
 
-Skills pass artifacts down the SDLC. A producer skill's output becomes the input for a consumer skill.
+Skills pass artifacts down the SDLC. A producer skill's output file becomes the input for a consumer skill.
 
 ```mermaid
 flowchart TD
-    PP["project-planner<br/>Module map, risks,<br/>acceptance criteria"] --> TD["task-decomposition<br/>Atomic tasks"]
-    SA["system-architecture<br/>ADRs, layer decisions"] --> BE["python-backend-expert"]
+    PP["project-planner<br/>→ plan.md"] --> TD["task-decomposition<br/>→ task_plan.md, progress.md"]
+    PP -.-> SA["system-architecture<br/>→ architecture.md, ADRs"]
+    SA --> BE["python-backend-expert"]
     SA --> FE["react-frontend-expert"]
-    AD["api-design-patterns<br/>API contracts"] --> BE
+    AD["api-design-patterns<br/>→ api-design.md"] --> BE
     AD --> FE
     BE -- "Backend code" --> PT["pytest-patterns"]
     FE -- "Components/hooks" --> RT["react-testing-patterns"]
-    DOC["docker-best-practices<br/>Container images"] --> DEP["deployment-pipeline"]
-    MON["monitoring-setup<br/>Observability infra"] --> IR["incident-response"]
+    DOC["docker-best-practices<br/>Container images"] --> DEP["deployment-pipeline<br/>→ deployment-report.md"]
+    MON["monitoring-setup<br/>→ monitoring-config.md"] --> IR["incident-response<br/>→ runbooks/, postmortem-*.md"]
+    SEC["code-review-security<br/>→ security-review.md"] --> PMC["pre-merge-checklist<br/>→ pre-merge-report.md"]
 ```
 
-| Producer | Artifact | Consumer |
-|----------|----------|----------|
-| `project-planner` | Module map, risks, acceptance criteria | `task-decomposition` |
-| `system-architecture` | Architecture decisions, ADRs | `python-backend-expert`, `react-frontend-expert` |
-| `api-design-patterns` | API contracts, schema conventions | `python-backend-expert`, `react-frontend-expert` |
-| `python-backend-expert` | Backend code | `pytest-patterns` |
-| `react-frontend-expert` | React components/hooks | `react-testing-patterns` |
-| `docker-best-practices` | Container images | `deployment-pipeline` |
-| `monitoring-setup` | Observability infrastructure | `incident-response` |
+| Producer | Output File | Consumer |
+|----------|-------------|----------|
+| `project-planner` | `plan.md` | `task-decomposition`, `system-architecture` (optional), `api-design-patterns` (optional) |
+| `task-decomposition` | `task_plan.md`, `progress.md`, `findings.md` | Implementation skills (contextual) |
+| `system-architecture` | `architecture.md`, `docs/adr/ADR-NNN.md` | `python-backend-expert`, `react-frontend-expert`, `api-design-patterns` |
+| `api-design-patterns` | `api-design.md` | `python-backend-expert`, `react-frontend-expert` |
+| `code-review-security` | `security-review.md` | `pre-merge-checklist` |
+| `pre-merge-checklist` | `pre-merge-report.md` | Merge decision |
+| `deployment-pipeline` | `deployment-report.md` | Operations tracking |
+| `monitoring-setup` | `monitoring-config.md` | `incident-response` |
+| `incident-response` | `docs/runbooks/<service>.md`, `postmortem-YYYY-MM-DD.md` | Future incidents, team knowledge |
 
 ### Horizontal Composition (Same-Phase Pairing)
 

@@ -15,7 +15,7 @@ metadata:
   author: platform-team
   version: '1.0.0'
   sdlc-phase: architecture
-allowed-tools: Read Grep Glob
+allowed-tools: Read Grep Glob Write
 context: fork
 ---
 
@@ -31,6 +31,10 @@ Activate this skill when:
 - Evaluating technology trade-offs for a new capability
 - Creating or reviewing Architecture Decision Records (ADRs)
 - Setting up a new project or major subsystem from scratch
+
+**Input:** If `plan.md` exists (from `project-planner`), read it for context about the feature scope and affected modules. Otherwise, work from the user's request directly.
+
+**Output:** Write architecture decisions to `architecture.md` and create ADRs in `docs/adr/ADR-NNN-<title>.md`. Tell the user: "Architecture written to `architecture.md`. Run `/api-design-patterns` for API contracts or `/task-decomposition` for implementation tasks."
 
 Do NOT use this skill for:
 - Writing implementation code (use `python-backend-expert` or `react-frontend-expert`)
@@ -343,6 +347,57 @@ class Settings(BaseSettings):
 - `VITE_API_URL` for API base URL
 - Build-time injection via Vite's `import.meta.env`
 - No secrets in frontend environment variables
+
+### Output Files
+
+#### architecture.md
+
+Write the architecture document to `architecture.md` at the project root:
+
+```markdown
+# Architecture: [Feature/System Name]
+
+## Overview
+[1-2 sentence summary of the architectural approach]
+
+## Layer Structure
+[Backend and frontend layer descriptions from this skill's patterns]
+
+## Key Decisions
+[Summary of decisions made, with links to ADRs]
+
+## Database Schema
+[Entity descriptions, relationships, key indexes]
+
+## Cross-Cutting Concerns
+[Auth, error handling, logging approach]
+
+## Next Steps
+- Run `/api-design-patterns` to define API contracts
+- Run `/task-decomposition` to create implementation tasks
+```
+
+#### ADRs
+
+For each significant decision, create an ADR in `docs/adr/`:
+
+```markdown
+# ADR-NNN: [Decision Title]
+
+## Status
+Accepted | Proposed | Superseded
+
+## Context
+[Why this decision is needed]
+
+## Decision
+[What we decided]
+
+## Consequences
+[Positive and negative outcomes]
+```
+
+Number ADRs sequentially (ADR-001, ADR-002, etc.).
 
 ## Examples
 

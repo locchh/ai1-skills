@@ -14,7 +14,7 @@ metadata:
   author: platform-team
   version: '1.0.0'
   sdlc-phase: operations
-allowed-tools: Read Grep Glob Bash(curl:*) Bash(jq:*)
+allowed-tools: Read Grep Glob Write Bash(curl:*) Bash(jq:*)
 context: fork
 ---
 
@@ -30,6 +30,8 @@ Activate this skill when:
 - Users are reporting issues that indicate a systemic problem
 - A failed deployment needs investigation and remediation
 - Conducting a post-mortem or root cause analysis after an incident
+
+**Output:** Write runbooks to `docs/runbooks/<service>-runbook.md` and post-mortems to `postmortem-YYYY-MM-DD.md`.
 
 Do NOT use this skill for:
 - Setting up monitoring or alerting rules (use `monitoring-setup`)
@@ -364,3 +366,43 @@ python skills/incident-response/scripts/generate-incident-report.py \
 | Memory growth | OOM kills, restarts | Memory leak | Check `docker stats`, restart |
 | Error spike after deploy | Errors start exactly at deploy time | Bug in new code | Rollback immediately |
 | Gradual degradation | Slowly worsening metrics | Resource exhaustion, connection leak | Check resource usage trends |
+
+### Output Files
+
+**Runbooks:** Write to `docs/runbooks/<service>-runbook.md`:
+```markdown
+# Runbook: [Service Name]
+
+## Service Overview
+- Purpose, dependencies, critical paths
+
+## Common Issues
+### Issue 1: [Description]
+- **Symptoms:** [What you see]
+- **Diagnosis:** [Commands to run]
+- **Resolution:** [Steps to fix]
+
+## Escalation
+- On-call: #ops-oncall
+- Service owner: @team-name
+```
+
+**Post-mortems:** Write to `postmortem-YYYY-MM-DD.md`:
+```markdown
+# Post-Mortem: [Incident Title]
+
+## Summary
+- **Date:** YYYY-MM-DD
+- **Severity:** SEV1-4
+- **Duration:** X hours
+- **Impact:** [Users/revenue affected]
+
+## Timeline
+- HH:MM - [Event]
+
+## Root Cause
+[Technical explanation]
+
+## Action Items
+- [ ] [Preventive measure] - Owner: @name - Due: YYYY-MM-DD
+```

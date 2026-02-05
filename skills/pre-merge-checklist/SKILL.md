@@ -13,7 +13,7 @@ metadata:
   author: platform-team
   version: '1.0.0'
   sdlc-phase: code-review
-allowed-tools: Read Grep Glob Bash(pytest:*) Bash(npm:*) Bash(ruff:*) Bash(mypy:*)
+allowed-tools: Read Grep Glob Write Bash(pytest:*) Bash(npm:*) Bash(ruff:*) Bash(mypy:*)
 context: fork
 ---
 
@@ -27,6 +27,8 @@ Activate this skill when:
 - Verifying that all automated checks pass before merging
 - Auditing a PR that has been approved but not yet merged
 - Running a final validation pass after addressing review feedback
+
+**Output:** Write results to `pre-merge-report.md` with pass/fail status for each check and blocking issues.
 
 Do NOT use this skill for:
 - In-depth security review (use `code-review-security`)
@@ -286,3 +288,38 @@ Overrides are never acceptable for:
 3. Review the automated results file
 4. Walk through the manual checklist above
 5. Leave review comments or approve
+
+### Output File
+
+Write results to `pre-merge-report.md`:
+
+```markdown
+# Pre-Merge Report: [PR Title]
+
+## Status: READY TO MERGE | BLOCKING ISSUES
+
+## Automated Checks
+
+| Check | Status | Details |
+|-------|--------|---------|
+| Linting (ruff) | PASS | No issues |
+| Type check (mypy) | PASS | No errors |
+| Tests (pytest) | PASS | 142 passed, 0 failed |
+| Coverage | PASS | 85% (threshold: 80%) |
+| Frontend lint | PASS | No issues |
+| Frontend types | PASS | No errors |
+
+## Manual Checks
+
+- [x] Code follows project patterns
+- [x] Tests cover new functionality
+- [x] No breaking API changes
+- [ ] Documentation updated (BLOCKING)
+
+## Blocking Issues
+
+1. README needs update for new CLI flag
+
+## Recommendation
+Address documentation before merge.
+```
